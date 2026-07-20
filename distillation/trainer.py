@@ -55,6 +55,7 @@ class CrackDistillTrainer:
         self.kd_weight   = self.cfg.distillation.losses.boundary.weight
         self.workers     = int(self.cfg.data.num_workers)
         self.device      = str(getattr(self.cfg.student, "device", "cuda"))
+        self.fraction    = float(getattr(self.cfg.data, "train_fraction", getattr(self.cfg.data, "fraction", 1.0)))
 
         # Dataset yaml
         ds  = self.cfg.data.datasets
@@ -132,6 +133,7 @@ class CrackDistillTrainer:
                 imgsz       = self.imgsz,
                 batch       = self.batch,
                 device      = self.device,
+                fraction    = self.fraction,
                 amp         = bool(self.cfg.train.amp),
                 lr0         = float(self.cfg.train.lr),
                 weight_decay= float(self.cfg.train.weight_decay),
@@ -177,6 +179,7 @@ class CrackDistillTrainer:
                 imgsz       = self.imgsz,
                 batch       = self.batch,
                 device      = self.device,
+                fraction    = self.fraction,
                 amp         = bool(self.cfg.train.amp),
                 lr0         = float(self.cfg.train.lr),
                 weight_decay= float(self.cfg.train.weight_decay),
@@ -229,6 +232,7 @@ class CrackDistillTrainer:
                 imgsz       = self.imgsz,
                 batch       = self.batch,
                 device      = self.device,
+                fraction    = self.fraction,
                 amp         = bool(self.cfg.train.amp),
                 lr0         = float(self.cfg.train.lr),
                 weight_decay= float(self.cfg.train.weight_decay),
@@ -262,6 +266,7 @@ class CrackDistillTrainer:
                 imgsz       = self.imgsz,
                 batch       = self.batch,
                 device      = self.device,
+                fraction    = self.fraction,
                 amp         = bool(self.cfg.train.amp),
                 lr0         = float(self.cfg.train.lr),
                 weight_decay= float(self.cfg.train.weight_decay),
@@ -271,6 +276,7 @@ class CrackDistillTrainer:
                 verbose     = True,
                 workers     = self.workers,
             )
+
 
         # Find best.pt
         self.best_pt = self.run_dir / "weights/best.pt"

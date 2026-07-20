@@ -142,12 +142,16 @@ During early multi-loss runs (Distill 4), performance dropped due to critical bu
 
 ### Step 6: Automated Optuna Hyperparameter Optimization
 * Integrated Optuna search script (`scripts/tune_kd_weights.py`).
-* Implemented **`MedianPruner`** early stopping (`n_startup_trials=2, n_warmup_steps=5`) over 15-epoch trials, saving 60–70% of total GPU compute time.
-* **Optimal Hyperparameters Discovered (Trial 8)**:
+* Implemented **`MedianPruner`** early stopping (`n_startup_trials=2, n_warmup_steps=8`) over 15-epoch trials, saving 60–70% of total GPU compute time while delaying pruning until Stage 2 joint KD runs for $\sim 3.5$ epochs.
+* **Dual-Evaluation Composite Objective**: Upgraded search objective to evaluate both cropped in-domain mAP50-seg and OOD uncropped mAP50-seg ($0.4 \cdot \text{cropped} + 0.6 \cdot \text{OOD}$).
+* **Engine Fraction Wiring**: Passed `fraction = self.fraction` to Ultralytics engine overrides in `trainer.py` to enforce `--train-fraction` parameters.
+* **Optimal Hyperparameters Discovered (Prior Trial 8)**:
   * **Temperature ($\tau$)**: `3.1683`
   * **Mask KD Weight ($\alpha$)**: `1.5147`
   * **Feature KD Weight ($\beta$)**: `1.9310`
   * **Boundary KD Weight ($\gamma$)**: `2.8067`
+  *(Ready for next Kaggle pass using the updated composite objective script).*
+
 
 ---
 
