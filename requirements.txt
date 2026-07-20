@@ -1,0 +1,34 @@
+# Crack-Distill Requirements
+# RTX 4060 8GB — tested config
+
+# ── Core ─────────────────────────────────────────────────────
+torch>=2.2.0          # CUDA 12.1 for RTX 4060
+torchvision>=0.17.0
+
+# ── Student model ────────────────────────────────────────────
+ultralytics>=8.3.0          # YOLO11-seg
+
+# ── Teacher model ────────────────────────────────────────────
+# SAM 2 — install from source:
+# pip install git+https://github.com/facebookresearch/sam2.git
+# Then download checkpoint:
+# wget https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt \
+#      -O checkpoints/sam2_hiera_large.pt
+
+# ── Data ─────────────────────────────────────────────────────
+opencv-python>=4.9.0
+albumentations>=1.4.0
+pycocotools>=2.0.7
+
+# ── Training utilities ───────────────────────────────────────
+pyyaml>=6.0
+tqdm>=4.66
+tensorboard>=2.16
+thop>=0.1.1                 # GFLOPs measurement
+
+# ── Scientific ───────────────────────────────────────────────
+numpy>=1.26
+scipy>=1.12
+
+# ── Optional: experiment tracking ───────────────────────────
+# wandb                     # uncomment to enable W&B logging

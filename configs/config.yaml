@@ -1,0 +1,146 @@
+# ============================================================
+# Crack-Distill — Master Config
+# ============================================================
+# YOU ONLY NEED TO CHANGE:
+#   1. data.datasets[0].path  → your crack500_yolo folder
+#   2. student.backbone       → yolo11n-seg (demo) or yolo11s-seg (paper)
+#   3. train.epochs           → 10 (demo) or 100 (real)
+# Everything else leave as is.
+# ============================================================
+
+project:
+  name: crack-distill
+  seed: 42
+  output_dir: runs/
+
+# ----------------------------------------------------------
+# TASK
+# To switch: change type ONLY — everything else adapts.
+# Options: instance_seg | semantic_seg | detection
+# ----------------------------------------------------------
+task:
+  type: instance_seg
+  num_classes: 1
+  class_names:
+    - crack
+
+# ----------------------------------------------------------
+# DATASET  ← change path here
+# ----------------------------------------------------------
+data:
+  root: data/datasets/
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
+  image_size: 512
+  batch_size: 16
+  num_workers: 4
+
+  datasets:
+    - name: combined
+      path: data/datasets/combined_yolo
+      format: yolo
+
+# ----------------------------------------------------------
+# TEACHER (SAM 2)  ← no changes needed
+# ----------------------------------------------------------
+teacher:
+  model: sam2
+  checkpoint: checkpoints/sam2_hiera_large.pt
+  config: configs/sam2.1/sam2.1_hiera_l.yaml  # sam2 package config
+  device: cuda
+  prompt_type: box
+  save_logits: true
+  logits_dir: data/teacher_logits/
+  batch_size: 4
+
+# ----------------------------------------------------------
+# STUDENT  ← change backbone here
+# ----------------------------------------------------------
+student:
+  backbone: yolov8n-seg   # demo/iteration = yolo11n-seg — change to yolov8n-seg for paper
+  pretrained: true
+  device: "0,1"
+  imgsz: 512
+
+# ----------------------------------------------------------
+# KD LOSSES  ← no changes needed
+# L = L_task + α·L_mask_kd + β·L_feature + γ·L_boundary
+# ----------------------------------------------------------
+distillation:
+  enabled: true
+  temperature: 3.1683      # lower = sharper soft targets, less NaN risk
+
+  progressive:
+    enabled: true
+    stage1_pct: 0.30
+    stage2_pct: 0.70
+
+  losses:
+    task:
+      weight: 1.0
+    mask_kd:
+      enabled: true
+      weight: 1.5147       # now active (NaN bug fixed) — moderate KL signal
+    feature:
+      enabled: true
+      weight: 1.9310       # small — feature alignment should not dominate
+      layers: [2, 5, 8]
+    boundary:
+      enabled: true
+      weight: 2.8067        # dominant — this is the only signal that worked before
+
+# ----------------------------------------------------------
+# TRAINING  ← change epochs here
+# ----------------------------------------------------------
+train:
+  epochs: 150    # 10 for demo, 150 for real training
+  lr: 0.001
+  lr_scheduler: cosine
+  warmup_epochs: 3
+  optimizer: AdamW
+  weight_decay: 0.0005
+  amp: true
+  grad_clip: 10.0
+  save_every: 10
+  patience: 20
+
+# ----------------------------------------------------------
+# EVALUATION  ← no changes needed
+# ----------------------------------------------------------
+eval:
+  primary_metric: mAP50-seg
+  metrics:
+    - mAP50-seg
+    - mAP50-95-seg
+    - dice
+    - boundary_iou
+    - fps
+    - latency_ms
+    - params_M
+    - gflops
+
+# ----------------------------------------------------------
+# PAPER EXPERIMENTS  ← no changes needed
+# ----------------------------------------------------------
+experiments:
+  - name: baseline_finetune
+    distillation.enabled: false
+  - name: pseudo_labels
+    distillation.losses.mask_kd.enabled: false
+    distillation.losses.feature.enabled: false
+    distillation.losses.boundary.enabled: false
+  - name: full_kd_box
+    distillation.enabled: true
+    teacher.logits_dir: data/teacher_logits_box/
+  - name: full_kd_centroid
+    distillation.enabled: true
+    teacher.logits_dir: data/teacher_logits_centroid/
+  - name: low_data_5pct
+    data.train_fraction: 0.05
+  - name: low_data_10pct
+    data.train_fraction: 0.10
+  - name: low_data_25pct
+    data.train_fraction: 0.25
+  - name: low_data_50pct
+    data.train_fraction: 0.50
