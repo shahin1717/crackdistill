@@ -55,10 +55,10 @@ teacher:
   batch_size: 4
 
 # ----------------------------------------------------------
-# STUDENT  ← change backbone here
+# STUDENT
 # ----------------------------------------------------------
 student:
-  backbone: yolov8n-seg   # demo/iteration = yolo11n-seg — change to yolov8n-seg for paper
+  backbone: yolo11n-seg   # primary student backbone (YOLOv11)
   pretrained: true
   device: "0,1"
   imgsz: 512
@@ -69,7 +69,7 @@ student:
 # ----------------------------------------------------------
 distillation:
   enabled: true
-  temperature: 3.1683      # lower = sharper soft targets, less NaN risk
+  temperature: 3.7769      # tuned via composite OOD-aware Optuna search
 
   progressive:
     enabled: true
@@ -81,14 +81,14 @@ distillation:
       weight: 1.0
     mask_kd:
       enabled: true
-      weight: 1.5147       # now active (NaN bug fixed) — moderate KL signal
+      weight: 0.9612       # tuned KL divergence mask weight
     feature:
       enabled: true
-      weight: 1.9310       # small — feature alignment should not dominate
+      weight: 1.8658       # tuned intermediate feature alignment weight
       layers: [2, 5, 8]
     boundary:
       enabled: true
-      weight: 2.8067        # dominant — this is the only signal that worked before
+      weight: 0.8055       # reduced to prevent over-memorizing crop boundary artifacts
 
 # ----------------------------------------------------------
 # TRAINING  ← change epochs here

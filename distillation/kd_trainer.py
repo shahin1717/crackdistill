@@ -515,15 +515,16 @@ class KDSegmentationTrainer(SegmentationTrainer):
                         proj = self.proj_layers[feat_key]
                         sf_proj = proj(sf)
                         
-                        # Map layer indices directly to SAM feature keys & channels (resolution/padding independent)
-                        if idx == 2:
+                        feature_h = sf.shape[2]
+                        stride = self.args.imgsz // feature_h
+
+                        # Map layer stride directly to SAM feature keys & channels (architecture independent)
+                        if stride <= 4:
                             target_key = "feat1"
                             out_channels = 64
                         else:
                             target_key = "image_embed"
                             out_channels = 256
-                        
-                        feature_h = sf.shape[2]
                         
                         # Stack SAM features for the batch
                         tf_list = []
