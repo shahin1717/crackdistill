@@ -490,8 +490,9 @@ class KDSegmentationTrainer(SegmentationTrainer):
                     if self.kd_cfg.losses.boundary.enabled:
                         sam_soft = torch.sigmoid(sam_logits_matched_resized / self.temperature)
                         bw = (1.0 - torch.abs(sam_soft - 0.5) * 2).detach()
+                        stu_clamped_raw = torch.clamp(student_mask_logits_resized, -30.0, 30.0)
                         bce = F.binary_cross_entropy_with_logits(
-                            student_mask_logits_resized, sam_soft.detach(), reduction="none"
+                            stu_clamped_raw, sam_soft.detach(), reduction="none"
                         )
                         loss_boundary = loss_boundary + (bce * bw).mean()
                         loss_boundary_count += 1
