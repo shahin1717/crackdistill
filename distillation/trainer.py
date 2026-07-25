@@ -43,6 +43,13 @@ class CrackDistillTrainer:
 
 
         self.backbone    = self.cfg.student.backbone
+        pretrained_w     = getattr(self.cfg.student, "pretrained_weights", None)
+        if pretrained_w and Path(str(pretrained_w)).exists():
+            self.model_weights = str(pretrained_w)
+            print(f"[Trainer] Using custom pretrained weights: {self.model_weights}")
+        else:
+            self.model_weights = f"{self.backbone}.pt" if not str(self.backbone).endswith(".pt") else str(self.backbone)
+
         self.imgsz       = self.cfg.student.imgsz
         self.epochs      = self.cfg.train.epochs
         self.batch       = self.cfg.data.batch_size
@@ -141,7 +148,7 @@ class CrackDistillTrainer:
                 name        = f"{self.run_dir.name}_stage1",
                 exist_ok    = True,
                 verbose     = True,
-                model       = f"{self.backbone}.pt",
+                model       = self.model_weights,
                 workers     = self.workers,
             )
             cfg_obj_stage1 = get_cfg(overrides=overrides_stage1)
@@ -166,11 +173,14 @@ class CrackDistillTrainer:
             print(f"[Trainer] Stage 1 finished. Best checkpoint loaded from: {stage1_best}")
 
             # ================= STAGE 2 =================
-            print("\n>>> STARTING PROGRESSIVE STAGE 2: Distill Full Pipeline (Unfrozen) <<<")
+            print("\n>>> STARTING PROGRESSIVE STAGE 2: Distill Full Pipeline <<<")
             stage2_dict = self.cfg.distillation.dict()
             if "progressive" not in stage2_dict:
                 stage2_dict["progressive"] = {}
-            stage2_dict["progressive"]["freeze_head"] = False
+            if not self.cfg.distillation.progressive.get("freeze_head", False):
+                stage2_dict["progressive"]["freeze_head"] = False
+            else:
+                stage2_dict["progressive"]["freeze_head"] = True
             stage2_kd_cfg = ConfigNode(stage2_dict)
 
             overrides_stage2 = dict(
@@ -240,7 +250,7 @@ class CrackDistillTrainer:
                 name        = self.run_dir.name,
                 exist_ok    = True,
                 verbose     = True,
-                model       = f"{self.backbone}.pt",
+                model       = self.model_weights,
                 workers     = self.workers,
             )
  

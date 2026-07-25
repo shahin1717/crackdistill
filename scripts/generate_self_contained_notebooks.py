@@ -16,6 +16,42 @@ for cell in source_cells:
         filepath = first_line.replace("%%writefile", "").strip()
         code_files[filepath] = cell
 
+def make_cell(cell_type, source):
+    if isinstance(source, str):
+        lines = [line + "\n" for line in source.split("\n")]
+        if lines and lines[-1] == "\n":
+            lines.pop()
+        source = lines
+    return {
+        "cell_type": cell_type,
+        "metadata": {},
+        "outputs": [],
+        "source": source
+    }
+
+def make_nb(cells):
+    return {
+        "cells": cells,
+        "metadata": {
+            "kernelspec": {
+                "display_name": "Python 3",
+                "language": "python",
+                "name": "python3"
+            },
+            "language_info": {
+                "name": "python"
+            }
+        },
+        "nbformat": 4,
+        "nbformat_minor": 2
+    }
+
+# Read fresh content directly from physical files on disk
+for filepath in list(code_files.keys()):
+    if Path(filepath).exists():
+        content = Path(filepath).read_text(encoding="utf-8")
+        code_files[filepath] = make_cell("code", f"%%writefile {filepath}\n" + content)
+
 print("Extracted self-contained source files:")
 for path in code_files:
     print(f" - {path}")
@@ -202,6 +238,7 @@ This notebook is 100% self-contained for Kaggle execution. It evaluates the SAM 
     linker_cell,
     make_cell("code", """# Convert Crack500 to YOLO format & generate teacher logits
 !python scripts/convert_crack500.py --src data/datasets/crack500 --dst data/datasets/crack500_yolo
+!ln -sfn crack500_yolo data/datasets/combined_yolo
 
 print("=== Generating SAM 2 Box-Only Logits ===")
 !python scripts/generate_teacher_logits.py --prompt-type box --logits-dir data/teacher_logits_box --dataset data/datasets/crack500_yolo
@@ -252,6 +289,7 @@ This notebook is 100% self-contained for Kaggle execution. It evaluates the SAM 
     linker_cell,
     make_cell("code", """# Convert DeepCrack to YOLO format & generate teacher logits
 !python scripts/convert_deepcrack.py --src data/datasets/deepcrack --dst data/datasets/deepcrack_yolo
+!ln -sfn deepcrack_yolo data/datasets/combined_yolo
 
 print("=== Generating SAM 2 Box-Only Logits for DeepCrack ===")
 !python scripts/generate_teacher_logits.py --prompt-type box --logits-dir data/teacher_logits_box --dataset data/datasets/deepcrack_yolo
@@ -260,10 +298,19 @@ print("=== Generating SAM 2 Box-Only Logits for DeepCrack ===")
     make_cell("code", """# Train comparative models on DeepCrack
 !python scripts/run_experiments.py --exp baseline_finetune --cfg configs/config.yaml
 !python scripts/run_experiments.py --exp full_kd_box --cfg configs/config.yaml
+!python scripts/run_experiments.py --exp full_kd_seghead_frozen --cfg configs/config.yaml
 """),
     make_cell("markdown", "## 📊 Evaluation & Head Freeze Analysis"),
-    make_cell("code", """print("=== In-Domain DeepCrack Evaluation ===")
-!python scripts/test_model.py --val --model runs/crack_distill_full_kd_box_instance_seg_yolo11n-seg/weights/best.pt --data data/datasets/deepcrack_yolo/dataset.yaml
+    make_cell("code", """print("=== In-Domain DeepCrack Comparative Evaluation ===")
+models = {
+    "Baseline (No KD)": "runs/crack_distill_baseline_finetune_instance_seg_yolo11n-seg/weights/best.pt",
+    "Full KD (Box Prompts)": "runs/crack_distill_full_kd_box_instance_seg_yolo11n-seg/weights/best.pt",
+    "Full KD (SegHead Frozen)": "runs/crack_distill_full_kd_seghead_frozen_instance_seg_yolo11n-seg/weights/best.pt",
+}
+
+for name, path in models.items():
+    print(f"\\n--- Evaluating {name} ---")
+    !python scripts/test_model.py --val --model {path} --data data/datasets/deepcrack_yolo/dataset.yaml
 """)
 ]
 
@@ -359,7 +406,11 @@ This notebook is 100% self-contained for Kaggle execution. It runs full loss com
     code_files["scripts/run_experiments.py"],
     sam2_env_cell,
     linker_cell,
-    make_cell("code", """# Run component ablations
+    make_cell("code", """# Convert Crack500 dataset & link combined_yolo
+!python scripts/convert_crack500.py --src data/datasets/crack500 --dst data/datasets/crack500_yolo
+!ln -sfn crack500_yolo data/datasets/combined_yolo
+
+# Run component ablations
 !python scripts/run_experiments.py --exp ablation_no_mask_kd --cfg configs/config.yaml
 !python scripts/run_experiments.py --exp ablation_no_feature --cfg configs/config.yaml
 !python scripts/run_experiments.py --exp ablation_no_boundary --cfg configs/config.yaml

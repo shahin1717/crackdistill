@@ -100,7 +100,7 @@ train:
   warmup_epochs: 3
   optimizer: AdamW
   weight_decay: 0.0005
-  amp: true
+  amp: false     # disabled FP16 AMP to prevent loss NaN / FP16 overflow on thin crack datasets (e.g. DeepCrack)
   grad_clip: 10.0
   save_every: 10
   patience: 20

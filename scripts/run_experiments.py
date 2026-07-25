@@ -62,6 +62,19 @@ EXPERIMENTS = {
             "teacher.logits_dir": "data/teacher_logits_centroid/",
         }
     },
+    "full_kd_seghead_frozen": {
+        "description": "Full KD pipeline with Segment Head Frozen throughout full KD run (ablation)",
+        "overrides": {
+            "distillation.enabled": True,
+            "distillation.progressive.enabled": True,
+            "distillation.progressive.freeze_head": True,
+            "distillation.losses.mask_kd.enabled": True,
+            "distillation.losses.feature.enabled": True,
+            "distillation.losses.boundary.enabled": True,
+            "teacher.logits_dir": "data/teacher_logits_box/",
+            "student.pretrained_weights": "runs/crack_distill_baseline_finetune_instance_seg_yolo11n-seg/weights/best.pt",
+        }
+    },
     "low_data_5pct": {
         "description": "H2: KD in low-data regime (5% of training set)",
         "overrides": {

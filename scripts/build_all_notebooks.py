@@ -347,12 +347,21 @@ print("=== Generating SAM 2 Box-Only Logits for DeepCrack ===")
     make_cell("code", """# Train comparative models on DeepCrack
 !python scripts/run_experiments.py --exp baseline_finetune --cfg configs/config.yaml
 !python scripts/run_experiments.py --exp full_kd_box --cfg configs/config.yaml
+!python scripts/run_experiments.py --exp full_kd_seghead_frozen --cfg configs/config.yaml
 """),
 
     make_cell("markdown", "## 📊 Evaluation & Head Freeze Analysis"),
 
-    make_cell("code", """print("=== In-Domain DeepCrack Evaluation ===")
-!python scripts/test_model.py --val --model runs/crack_distill_full_kd_box_instance_seg_yolo11n-seg/weights/best.pt --data data/datasets/deepcrack_yolo/dataset.yaml
+    make_cell("code", """print("=== In-Domain DeepCrack Comparative Evaluation ===")
+models = {
+    "Baseline (No KD)": "runs/crack_distill_baseline_finetune_instance_seg_yolo11n-seg/weights/best.pt",
+    "Full KD (Box Prompts)": "runs/crack_distill_full_kd_box_instance_seg_yolo11n-seg/weights/best.pt",
+    "Full KD (SegHead Frozen)": "runs/crack_distill_full_kd_seghead_frozen_instance_seg_yolo11n-seg/weights/best.pt",
+}
+
+for name, path in models.items():
+    print(f"\\n--- Evaluating {name} ---")
+    !python scripts/test_model.py --val --model {path} --data data/datasets/deepcrack_yolo/dataset.yaml
 """)
 ]
 

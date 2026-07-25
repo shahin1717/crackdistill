@@ -70,7 +70,18 @@ def main():
                         help="Prompt type to use (box or box_centroid)")
     parser.add_argument("--logits-dir", type=str, default=None,
                         help="Override output logits directory")
+    parser.add_argument("--dataset", type=str, default=None,
+                        help="Path to YOLO dataset or raw dataset directory")
     args = parser.parse_args()
+
+    if args.dataset and not args.img_dir:
+        ds_path = Path(args.dataset).expanduser().resolve()
+        if (ds_path / "images/train").exists():
+            args.img_dir = str(ds_path / "images/train")
+            args.mask_dir = str(ds_path / "masks/train") if (ds_path / "masks/train").exists() else str(ds_path / "images/train")
+        elif ds_path.exists():
+            args.img_dir = str(ds_path)
+            args.mask_dir = str(ds_path)
 
     if args.logits_dir:
         logits_dir = Path(args.logits_dir).expanduser().resolve()
@@ -179,19 +190,56 @@ def main():
                 continue
             image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
 
-            # Load binary mask
+            # Load instance masks from binary PNG/BMP file or YOLO label .txt file
+            instance_masks = []
+
             mask_path = mask_dir / f"{img_path.stem}.png"
             if not mask_path.exists():
                 mask_path = mask_dir / f"{img_path.stem}.bmp"
+            
+            # Check raw dataset fallback paths (e.g. train_lab / traincrop)
             if not mask_path.exists():
+                for alt_name in ["train_lab", "traincrop", "masks"]:
+                    alt_path = img_dir.parent.parent / alt_name / f"{img_path.stem}.png"
+                    if alt_path.exists():
+                        mask_path = alt_path
+                        break
+
+            # Check YOLO txt label fallback
+            label_txt_path = img_dir.parent.parent / "labels" / img_dir.name / f"{img_path.stem}.txt"
+
+            if mask_path.exists():
+                binary = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
+                if binary is not None:
+                    binary = (binary > 127).astype(np.uint8)
+                    num_labels, labels_map = cv2.connectedComponents(binary)
+                    for label_id in range(1, num_labels):
+                        inst = (labels_map == label_id).astype(np.uint8)
+                        if inst.sum() >= 50:
+                            instance_masks.append(inst)
+            elif label_txt_path.exists():
+                img_h, img_w = image.shape[:2]
+                with open(label_txt_path, "r") as lf:
+                    lines = lf.readlines()
+                for line in lines:
+                    parts = line.strip().split()
+                    if len(parts) < 7:  # class + at least 3 (x,y) pairs
+                        continue
+                    try:
+                        coords = [float(x) for x in parts[1:]]
+                        pts = np.array(coords).reshape(-1, 2)
+                        pts[:, 0] *= img_w
+                        pts[:, 1] *= img_h
+                        inst = np.zeros((img_h, img_w), dtype=np.uint8)
+                        cv2.fillPoly(inst, [pts.astype(np.int32)], 1)
+                        if inst.sum() >= 50:
+                            instance_masks.append(inst)
+                    except Exception:
+                        pass
+
+            if not instance_masks:
                 failed += 1
                 continue
-
-            binary = cv2.imread(str(mask_path), cv2.IMREAD_GRAYSCALE)
-            binary = (binary > 127).astype(np.uint8)
-
-            # Split into instances via connected components
-            num_labels, labels_map = cv2.connectedComponents(binary)
 
             all_logits = []
             predictor.set_image(image)
@@ -202,10 +250,7 @@ def main():
             feat0 = features["high_res_feats"][0].cpu().half().numpy()
             feat1 = features["high_res_feats"][1].cpu().half().numpy()
 
-            for label_id in range(1, num_labels):
-                instance = (labels_map == label_id).astype(np.uint8)
-                if instance.sum() < 50:   # skip tiny noise
-                    continue
+            for instance in instance_masks:
                 box = mask_to_bbox(instance)
                 if box is None:
                     continue

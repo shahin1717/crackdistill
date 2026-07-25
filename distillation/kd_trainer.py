@@ -147,11 +147,24 @@ class KDSegmentationTrainer(SegmentationTrainer):
 
     def setup_model(self):
         """Build model, set up projection layers and hooks, and call parent setup."""
+        head_idx = 22
+        is_freeze_head = hasattr(self.kd_cfg, "progressive") and self.kd_cfg.progressive.get("freeze_head", False)
+
+        if is_freeze_head:
+            if self.args.freeze is None:
+                self.args.freeze = [head_idx]
+            elif isinstance(self.args.freeze, list):
+                if head_idx not in self.args.freeze:
+                    self.args.freeze.append(head_idx)
+            elif isinstance(self.args.freeze, int):
+                self.args.freeze = list(range(self.args.freeze))
+                if head_idx not in self.args.freeze:
+                    self.args.freeze.append(head_idx)
+            print(f"[KD] Progressive: Freezing Segment head at index {head_idx}. args.freeze={self.args.freeze}")
+
         ckpt = super().setup_model()
 
-        # Freezing segment head dynamically if progressive head freezing is enabled
-        if hasattr(self.kd_cfg, "progressive") and self.kd_cfg.progressive.get("freeze_head", False):
-            head_idx = 22
+        if is_freeze_head:
             try:
                 from ultralytics.utils.torch_utils import unwrap_model
                 model = unwrap_model(self.model)
@@ -163,16 +176,10 @@ class KDSegmentationTrainer(SegmentationTrainer):
                     head_idx = idx
                     break
 
-            if self.args.freeze is None:
-                self.args.freeze = [head_idx]
-            elif isinstance(self.args.freeze, list):
-                if head_idx not in self.args.freeze:
-                    self.args.freeze.append(head_idx)
-            elif isinstance(self.args.freeze, int):
-                self.args.freeze = list(range(self.args.freeze))
-                if head_idx not in self.args.freeze:
-                    self.args.freeze.append(head_idx)
-            print(f"[KD] Progressive: Freezing Segment head at index {head_idx}. args.freeze={self.args.freeze}")
+            for name, param in model.named_parameters():
+                if f"model.{head_idx}." in name:
+                    param.requires_grad = False
+            print(f"[KD] Explicitly set requires_grad=False for Segment head parameters (layer {head_idx})")
 
         self._setup_proj_layers_and_hooks()
         self._patch_model_loss()
