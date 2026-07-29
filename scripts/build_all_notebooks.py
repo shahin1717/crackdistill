@@ -440,6 +440,10 @@ This notebook runs **Ablation 1**: Knowledge Distillation on Crack500 with **Mas
 
     make_cell("code", """!mkdir -p configs utils distillation scripts checkpoints data/datasets data/teacher_logits_box runs"""),
     make_cell("code", """!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas"""),
+    make_cell("code", """# Auto-fetch project modules to ensure 100% self-contained execution on Kaggle
+!git clone https://github.com/shahin1717/crackdistill.git repo_code || true
+!cp -r repo_code/distillation repo_code/utils repo_code/configs repo_code/scripts .
+"""),
     make_cell("code", """import os, shutil
 from pathlib import Path
 input_dir = Path("/kaggle/input/distill_datasetforme")
@@ -494,6 +498,10 @@ This notebook runs **Ablation 2**: Knowledge Distillation on Crack500 with **Int
 
     make_cell("code", """!mkdir -p configs utils distillation scripts checkpoints data/datasets data/teacher_logits_box runs"""),
     make_cell("code", """!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas"""),
+    make_cell("code", """# Auto-fetch project modules to ensure 100% self-contained execution on Kaggle
+!git clone https://github.com/shahin1717/crackdistill.git repo_code || true
+!cp -r repo_code/distillation repo_code/utils repo_code/configs repo_code/scripts .
+"""),
     make_cell("code", """import os, shutil
 from pathlib import Path
 input_dir = Path("/kaggle/input/distill_datasetforme")
@@ -548,6 +556,10 @@ This notebook runs **Ablation 3**: Knowledge Distillation on Crack500 with **Bou
 
     make_cell("code", """!mkdir -p configs utils distillation scripts checkpoints data/datasets data/teacher_logits_box runs"""),
     make_cell("code", """!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas"""),
+    make_cell("code", """# Auto-fetch project modules to ensure 100% self-contained execution on Kaggle
+!git clone https://github.com/shahin1717/crackdistill.git repo_code || true
+!cp -r repo_code/distillation repo_code/utils repo_code/configs repo_code/scripts .
+"""),
     make_cell("code", """import os, shutil
 from pathlib import Path
 input_dir = Path("/kaggle/input/distill_datasetforme")
@@ -602,6 +614,10 @@ This notebook runs **Ablation 4**: Knowledge Distillation on DeepCrack with **Se
 
     make_cell("code", """!mkdir -p configs utils distillation scripts checkpoints data/datasets data/teacher_logits_box runs"""),
     make_cell("code", """!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas"""),
+    make_cell("code", """# Auto-fetch project modules to ensure 100% self-contained execution on Kaggle
+!git clone https://github.com/shahin1717/crackdistill.git repo_code || true
+!cp -r repo_code/distillation repo_code/utils repo_code/configs repo_code/scripts .
+"""),
     make_cell("code", """import os, shutil
 from pathlib import Path
 input_dir = Path("/kaggle/input/distill_datasetforme")
@@ -659,6 +675,10 @@ This notebook evaluates all trained model checkpoints from `nb2`, `nb3`, and `nb
 
     make_cell("code", """!mkdir -p configs utils distillation scripts checkpoints data/datasets"""),
     make_cell("code", """!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas"""),
+    make_cell("code", """# Auto-fetch project modules to ensure 100% self-contained execution on Kaggle
+!git clone https://github.com/shahin1717/crackdistill.git repo_code || true
+!cp -r repo_code/distillation repo_code/utils repo_code/configs repo_code/scripts .
+"""),
 
     make_cell("code", """import pandas as pd
 from pathlib import Path
