@@ -430,60 +430,276 @@ with open(out_dir / "nb4_cross_dataset_generalization.ipynb", "w") as f:
 print("Created nb4_cross_dataset_generalization.ipynb")
 
 # ==============================================================================
-# NOTEBOOK 5: nb5_ablation_and_results.ipynb
+# NOTEBOOK 5a: nb5a_ablation_no_mask_kd.ipynb
 # ==============================================================================
-nb5_cells = [
-    make_cell("markdown", """# 🔬 Notebook 5: Loss Component Ablation & Results Summary
-This notebook runs full loss component ablations to isolate the contributions of:
-- Mask KD loss ($L_{\text{mask\_kd}}$)
-- Intermediate Feature Alignment MSE ($L_{\text{feature}}$)
-- Uncertainty Boundary BCE ($L_{\text{boundary}}$)
-- Progressive Segment Head Freezing (Stage 1 vs Full-Run Freeze)"""),
+nb5a_cells = [
+    make_cell("markdown", """# 🔬 Notebook 5a: Ablation 1 — Remove Soft Mask KL Loss (w/o $L_{\\text{KL}}$)
+This notebook runs **Ablation 1**: Knowledge Distillation on Crack500 with **Mask KL Loss disabled** ($\alpha = 0$).
+* **Goal**: Measure how much performance and OOD generalization drop when soft KL logit distillation is removed.
+* **Input Dataset**: Crack500 + pre-computed SAM 2 teacher logits/features."""),
+
+    make_cell("code", """!mkdir -p configs utils distillation scripts checkpoints data/datasets data/teacher_logits_box runs"""),
+    make_cell("code", """!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas"""),
+    make_cell("code", """import os, shutil
+from pathlib import Path
+input_dir = Path("/kaggle/input/distill_datasetforme")
+if not input_dir.exists(): input_dir = Path("/kaggle/input")
+datasets_dir = Path("data/datasets")
+datasets_dir.mkdir(parents=True, exist_ok=True)
+
+for root, dirs, files in os.walk(str(input_dir)):
+    root_path = Path(root)
+    if "traincrop" in dirs:
+        dest = datasets_dir / "crack500"
+        if os.path.lexists(dest): os.unlink(dest) if os.path.islink(dest) else shutil.rmtree(dest)
+        os.symlink(root_path, dest)
+        print(f"Linked Crack500: {root_path} -> {dest}")
+        break
+"""),
+    make_cell("code", """# Run Ablation 1 (No Mask KL)
+import sys
+sys.path.insert(0, ".")
+from distillation.kd_trainer import KDSegmentationTrainer
+from utils.config_loader import load_config, override_config
+
+cfg = load_config("configs/config.yaml")
+cfg = override_config(cfg, {
+    "project.name": "crack_distill",
+    "project.experiment": "ablation_no_mask_kd",
+    "distillation.enabled": True,
+    "distillation.losses.mask_kd.enabled": False,
+    "distillation.losses.feature.enabled": True,
+    "distillation.losses.boundary.enabled": True,
+    "teacher.logits_dir": "data/teacher_logits_box/"
+})
+
+trainer = KDSegmentationTrainer(cfg)
+trainer.train()
+print("✓ Ablation 1 (No Mask KL) completed!")
+""")
+]
+
+with open(out_dir / "nb5a_ablation_no_mask_kd.ipynb", "w") as f:
+    json.dump(make_nb(nb5a_cells), f, indent=1, ensure_ascii=False)
+print("Created nb5a_ablation_no_mask_kd.ipynb")
+
+# ==============================================================================
+# NOTEBOOK 5b: nb5b_ablation_no_feature_mse.ipynb
+# ==============================================================================
+nb5b_cells = [
+    make_cell("markdown", """# 🔬 Notebook 5b: Ablation 2 — Remove Feature Alignment MSE (w/o $L_{\\text{feature}}$)
+This notebook runs **Ablation 2**: Knowledge Distillation on Crack500 with **Intermediate Feature Alignment MSE disabled** ($\beta = 0$).
+* **Goal**: Measure how much representation transfer relies on intermediate backbone feature MSE.
+* **Input Dataset**: Crack500 + pre-computed SAM 2 teacher logits."""),
+
+    make_cell("code", """!mkdir -p configs utils distillation scripts checkpoints data/datasets data/teacher_logits_box runs"""),
+    make_cell("code", """!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas"""),
+    make_cell("code", """import os, shutil
+from pathlib import Path
+input_dir = Path("/kaggle/input/distill_datasetforme")
+if not input_dir.exists(): input_dir = Path("/kaggle/input")
+datasets_dir = Path("data/datasets")
+datasets_dir.mkdir(parents=True, exist_ok=True)
+
+for root, dirs, files in os.walk(str(input_dir)):
+    root_path = Path(root)
+    if "traincrop" in dirs:
+        dest = datasets_dir / "crack500"
+        if os.path.lexists(dest): os.unlink(dest) if os.path.islink(dest) else shutil.rmtree(dest)
+        os.symlink(root_path, dest)
+        print(f"Linked Crack500: {root_path} -> {dest}")
+        break
+"""),
+    make_cell("code", """# Run Ablation 2 (No Feature MSE)
+import sys
+sys.path.insert(0, ".")
+from distillation.kd_trainer import KDSegmentationTrainer
+from utils.config_loader import load_config, override_config
+
+cfg = load_config("configs/config.yaml")
+cfg = override_config(cfg, {
+    "project.name": "crack_distill",
+    "project.experiment": "ablation_no_feature",
+    "distillation.enabled": True,
+    "distillation.losses.mask_kd.enabled": True,
+    "distillation.losses.feature.enabled": False,
+    "distillation.losses.boundary.enabled": True,
+    "teacher.logits_dir": "data/teacher_logits_box/"
+})
+
+trainer = KDSegmentationTrainer(cfg)
+trainer.train()
+print("✓ Ablation 2 (No Feature MSE) completed!")
+""")
+]
+
+with open(out_dir / "nb5b_ablation_no_feature_mse.ipynb", "w") as f:
+    json.dump(make_nb(nb5b_cells), f, indent=1, ensure_ascii=False)
+print("Created nb5b_ablation_no_feature_mse.ipynb")
+
+# ==============================================================================
+# NOTEBOOK 5c: nb5c_ablation_no_boundary_bce.ipynb
+# ==============================================================================
+nb5c_cells = [
+    make_cell("markdown", """# 🔬 Notebook 5c: Ablation 3 — Remove Uncertainty Boundary BCE (w/o $L_{\\text{boundary}}$)
+This notebook runs **Ablation 3**: Knowledge Distillation on Crack500 with **Boundary BCE Loss disabled** ($\gamma = 0$).
+* **Goal**: Measure the impact of boundary-specific pixel BCE loss on thin crack edge precision.
+* **Input Dataset**: Crack500 + pre-computed SAM 2 teacher logits."""),
+
+    make_cell("code", """!mkdir -p configs utils distillation scripts checkpoints data/datasets data/teacher_logits_box runs"""),
+    make_cell("code", """!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas"""),
+    make_cell("code", """import os, shutil
+from pathlib import Path
+input_dir = Path("/kaggle/input/distill_datasetforme")
+if not input_dir.exists(): input_dir = Path("/kaggle/input")
+datasets_dir = Path("data/datasets")
+datasets_dir.mkdir(parents=True, exist_ok=True)
+
+for root, dirs, files in os.walk(str(input_dir)):
+    root_path = Path(root)
+    if "traincrop" in dirs:
+        dest = datasets_dir / "crack500"
+        if os.path.lexists(dest): os.unlink(dest) if os.path.islink(dest) else shutil.rmtree(dest)
+        os.symlink(root_path, dest)
+        print(f"Linked Crack500: {root_path} -> {dest}")
+        break
+"""),
+    make_cell("code", """# Run Ablation 3 (No Boundary BCE)
+import sys
+sys.path.insert(0, ".")
+from distillation.kd_trainer import KDSegmentationTrainer
+from utils.config_loader import load_config, override_config
+
+cfg = load_config("configs/config.yaml")
+cfg = override_config(cfg, {
+    "project.name": "crack_distill",
+    "project.experiment": "ablation_no_boundary",
+    "distillation.enabled": True,
+    "distillation.losses.mask_kd.enabled": True,
+    "distillation.losses.feature.enabled": True,
+    "distillation.losses.boundary.enabled": False,
+    "teacher.logits_dir": "data/teacher_logits_box/"
+})
+
+trainer = KDSegmentationTrainer(cfg)
+trainer.train()
+print("✓ Ablation 3 (No Boundary BCE) completed!")
+""")
+]
+
+with open(out_dir / "nb5c_ablation_no_boundary_bce.ipynb", "w") as f:
+    json.dump(make_nb(nb5c_cells), f, indent=1, ensure_ascii=False)
+print("Created nb5c_ablation_no_boundary_bce.ipynb")
+
+# ==============================================================================
+# NOTEBOOK 5d: nb5d_ablation_seghead_frozen.ipynb
+# ==============================================================================
+nb5d_cells = [
+    make_cell("markdown", """# 🔬 Notebook 5d: Ablation 4 — Full-Run Segmentation Head Freezing
+This notebook runs **Ablation 4**: Knowledge Distillation on DeepCrack with **Segmentation Head Frozen throughout the ENTIRE training run** (not just Stage 1).
+* **Goal**: Compare full-run head freezing against 2-stage progressive unfreezing.
+* **Input Dataset**: DeepCrack + pre-computed SAM 2 teacher logits."""),
+
+    make_cell("code", """!mkdir -p configs utils distillation scripts checkpoints data/datasets data/teacher_logits_box runs"""),
+    make_cell("code", """!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas"""),
+    make_cell("code", """import os, shutil
+from pathlib import Path
+input_dir = Path("/kaggle/input/distill_datasetforme")
+if not input_dir.exists(): input_dir = Path("/kaggle/input")
+datasets_dir = Path("data/datasets")
+datasets_dir.mkdir(parents=True, exist_ok=True)
+
+for root, dirs, files in os.walk(str(input_dir)):
+    root_path = Path(root)
+    if "train_img" in dirs:
+        dest = datasets_dir / "deepcrack"
+        if os.path.lexists(dest): os.unlink(dest) if os.path.islink(dest) else shutil.rmtree(dest)
+        os.symlink(root_path, dest)
+        print(f"Linked DeepCrack: {root_path} -> {dest}")
+        break
+"""),
+    make_cell("code", """# Run Ablation 4 (Full-Run SegHead Frozen)
+import sys
+sys.path.insert(0, ".")
+from distillation.kd_trainer import KDSegmentationTrainer
+from utils.config_loader import load_config, override_config
+
+cfg = load_config("configs/config.yaml")
+cfg = override_config(cfg, {
+    "project.name": "crack_distill",
+    "project.experiment": "ablation_seghead_frozen",
+    "distillation.enabled": True,
+    "distillation.progressive.enabled": True,
+    "distillation.progressive.freeze_head": True,
+    "distillation.progressive.unfreeze_epoch_ratio": 1.0,  # Never unfreeze during run
+    "distillation.losses.mask_kd.enabled": True,
+    "distillation.losses.feature.enabled": True,
+    "distillation.losses.boundary.enabled": True,
+    "teacher.logits_dir": "data/teacher_logits_box/"
+})
+
+trainer = KDSegmentationTrainer(cfg)
+trainer.train()
+print("✓ Ablation 4 (Full-Run SegHead Frozen) completed!")
+""")
+]
+
+with open(out_dir / "nb5d_ablation_seghead_frozen.ipynb", "w") as f:
+    json.dump(make_nb(nb5d_cells), f, indent=1, ensure_ascii=False)
+print("Created nb5d_ablation_seghead_frozen.ipynb")
+
+# ==============================================================================
+# NOTEBOOK 5e: nb5e_ablation_results_summary.ipynb
+# ==============================================================================
+nb5e_cells = [
+    make_cell("markdown", """# 📊 Notebook 5e: Master Ablation Study & Results Summary Aggregation
+This notebook evaluates all trained model checkpoints from `nb2`, `nb3`, and `nb5a-d` to generate the master academic comparison table.
+* **Input Checkpoints**: `best.pt` files from all ablation and production runs.
+* **Outputs**: Master Markdown table with Mask mAP50, Mask mAP50-95, Box mAP50, and Precision/Recall."""),
 
     make_cell("code", """!mkdir -p configs utils distillation scripts checkpoints data/datasets"""),
-
     make_cell("code", """!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas"""),
-
-    make_cell("code", """# Run component ablations
-!python scripts/run_experiments.py --exp ablation_no_mask_kd --cfg configs/config.yaml
-!python scripts/run_experiments.py --exp ablation_no_feature --cfg configs/config.yaml
-!python scripts/run_experiments.py --exp ablation_no_boundary --cfg configs/config.yaml
-"""),
-
-    make_cell("markdown", "## 📈 Master Results Summary Table"),
 
     make_cell("code", """import pandas as pd
 from pathlib import Path
 from ultralytics import YOLO
 
 ablation_runs = [
-    ("Baseline (Fine-tune)", "runs/crack_distill_baseline_finetune_instance_seg_yolo11n-seg/weights/best.pt"),
-    ("Full KD (Box)", "runs/crack_distill_full_kd_box_instance_seg_yolo11n-seg/weights/best.pt"),
-    ("Full KD (Box+Centroid)", "runs/crack_distill_full_kd_centroid_instance_seg_yolo11n-seg/weights/best.pt"),
-    ("Ablation: w/o Mask KD", "runs/crack_distill_ablation_no_mask_kd_instance_seg_yolo11n-seg/weights/best.pt"),
-    ("Ablation: w/o Feature KD", "runs/crack_distill_ablation_no_feature_instance_seg_yolo11n-seg/weights/best.pt"),
-    ("Ablation: w/o Boundary KD", "runs/crack_distill_ablation_no_boundary_instance_seg_yolo11n-seg/weights/best.pt"),
+    ("Baseline (No KD Fine-tune)", "runs/crack_distill_baseline_finetune_instance_seg_yolo11n-seg/weights/best.pt"),
+    ("Full KD (Box Prompts)", "runs/crack_distill_full_kd_box_instance_seg_yolo11n-seg/weights/best.pt"),
+    ("Full KD (Box + Centroid)", "runs/crack_distill_full_kd_centroid_instance_seg_yolo11n-seg/weights/best.pt"),
+    ("Ablation 1: w/o Mask KL (nb5a)", "runs/crack_distill_ablation_no_mask_kd_instance_seg_yolo11n-seg/weights/best.pt"),
+    ("Ablation 2: w/o Feature MSE (nb5b)", "runs/crack_distill_ablation_no_feature_instance_seg_yolo11n-seg/weights/best.pt"),
+    ("Ablation 3: w/o Boundary BCE (nb5c)", "runs/crack_distill_ablation_no_boundary_instance_seg_yolo11n-seg/weights/best.pt"),
+    ("Ablation 4: Full SegHead Freeze (nb5d)", "runs/crack_distill_ablation_seghead_frozen_instance_seg_yolo11n-seg/weights/best.pt"),
 ]
 
 data_yaml = "data/datasets/crack500_yolo/dataset.yaml"
 results = []
 for name, ckpt in ablation_runs:
-    if Path(ckpt).exists():
-        m = YOLO(ckpt)
+    ckpt_path = Path(ckpt)
+    if ckpt_path.exists():
+        m = YOLO(str(ckpt_path))
         res = m.val(data=data_yaml, split="val")
         results.append({
-            "Configuration": name,
-            "Cropped mAP50-seg": res.seg.map50,
-            "Cropped mAP50-95-seg": res.seg.map,
-            "Cropped mAP50-box": res.box.map50,
+            "Ablation / Model Variant": name,
+            "Mask mAP50": res.seg.map50,
+            "Mask mAP50-95": res.seg.map,
+            "Box mAP50": res.box.map50,
+            "Box mAP50-95": res.box.map,
         })
+    else:
+        print(f"Skipping {name}: checkpoint {ckpt} not found.")
 
 df = pd.DataFrame(results)
-print("\\n=== ABLATION STUDY RESULTS ===")
+print("\\n" + "="*70)
+print("🔬 MASTER ABLATION STUDY RESULTS SUMMARY")
+print("="*70)
 print(df.to_string(index=False))
 """)
 ]
 
-with open(out_dir / "nb5_ablation_and_results.ipynb", "w") as f:
-    json.dump(make_nb(nb5_cells), f, indent=1, ensure_ascii=False)
-print("Created nb5_ablation_and_results.ipynb")
+with open(out_dir / "nb5e_ablation_results_summary.ipynb", "w") as f:
+    json.dump(make_nb(nb5e_cells), f, indent=1, ensure_ascii=False)
+print("Created nb5e_ablation_results_summary.ipynb")
+
