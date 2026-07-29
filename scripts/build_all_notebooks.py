@@ -429,6 +429,26 @@ with open(out_dir / "nb4_cross_dataset_generalization.ipynb", "w") as f:
     json.dump(make_nb(nb4_cells), f, indent=1, ensure_ascii=False)
 print("Created nb4_cross_dataset_generalization.ipynb")
 
+# Read live code contents from workspace files for 100% self-contained %%writefile cells
+config_yaml_code = Path("configs/config.yaml").read_text(encoding="utf-8")
+config_loader_code = Path("utils/config_loader.py").read_text(encoding="utf-8")
+kd_trainer_code = Path("distillation/kd_trainer.py").read_text(encoding="utf-8")
+convert_crack500_code = Path("scripts/convert_crack500.py").read_text(encoding="utf-8")
+convert_deepcrack_code = Path("scripts/convert_deepcrack.py").read_text(encoding="utf-8")
+
+def get_self_contained_writefile_cells():
+    return [
+        make_cell("code", "!mkdir -p configs utils distillation scripts checkpoints data/datasets data/teacher_logits_box data/teacher_logits_centroid runs"),
+        make_cell("code", "!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas"),
+        make_cell("code", f"%%writefile configs/config.yaml\n{config_yaml_code}"),
+        make_cell("code", f"%%writefile utils/__init__.py\n# utils package"),
+        make_cell("code", f"%%writefile utils/config_loader.py\n{config_loader_code}"),
+        make_cell("code", f"%%writefile distillation/__init__.py\n# distillation package"),
+        make_cell("code", f"%%writefile distillation/kd_trainer.py\n{kd_trainer_code}"),
+        make_cell("code", f"%%writefile scripts/convert_crack500.py\n{convert_crack500_code}"),
+        make_cell("code", f"%%writefile scripts/convert_deepcrack.py\n{convert_deepcrack_code}"),
+    ]
+
 # ==============================================================================
 # NOTEBOOK 5a: nb5a_ablation_no_mask_kd.ipynb
 # ==============================================================================
@@ -437,13 +457,7 @@ nb5a_cells = [
 This notebook runs **Ablation 1**: Knowledge Distillation on Crack500 with **Mask KL Loss disabled** ($\alpha = 0$).
 * **Goal**: Measure how much performance and OOD generalization drop when soft KL logit distillation is removed.
 * **Input Dataset**: Crack500 + pre-computed SAM 2 teacher logits/features."""),
-
-    make_cell("code", """!mkdir -p configs utils distillation scripts checkpoints data/datasets data/teacher_logits_box runs"""),
-    make_cell("code", """!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas"""),
-    make_cell("code", """# Auto-fetch project modules to ensure 100% self-contained execution on Kaggle
-!git clone https://github.com/shahin1717/crackdistill.git repo_code || true
-!cp -r repo_code/distillation repo_code/utils repo_code/configs repo_code/scripts .
-"""),
+] + get_self_contained_writefile_cells() + [
     make_cell("code", """import os, shutil
 from pathlib import Path
 input_dir = Path("/kaggle/input/distill_datasetforme")
@@ -460,6 +474,7 @@ for root, dirs, files in os.walk(str(input_dir)):
         print(f"Linked Crack500: {root_path} -> {dest}")
         break
 """),
+    make_cell("code", """!python scripts/convert_crack500.py --src data/datasets/crack500 --dst data/datasets/crack500_yolo"""),
     make_cell("code", """# Run Ablation 1 (No Mask KL)
 import sys
 sys.path.insert(0, ".")
@@ -495,13 +510,7 @@ nb5b_cells = [
 This notebook runs **Ablation 2**: Knowledge Distillation on Crack500 with **Intermediate Feature Alignment MSE disabled** ($\beta = 0$).
 * **Goal**: Measure how much representation transfer relies on intermediate backbone feature MSE.
 * **Input Dataset**: Crack500 + pre-computed SAM 2 teacher logits."""),
-
-    make_cell("code", """!mkdir -p configs utils distillation scripts checkpoints data/datasets data/teacher_logits_box runs"""),
-    make_cell("code", """!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas"""),
-    make_cell("code", """# Auto-fetch project modules to ensure 100% self-contained execution on Kaggle
-!git clone https://github.com/shahin1717/crackdistill.git repo_code || true
-!cp -r repo_code/distillation repo_code/utils repo_code/configs repo_code/scripts .
-"""),
+] + get_self_contained_writefile_cells() + [
     make_cell("code", """import os, shutil
 from pathlib import Path
 input_dir = Path("/kaggle/input/distill_datasetforme")
@@ -518,6 +527,7 @@ for root, dirs, files in os.walk(str(input_dir)):
         print(f"Linked Crack500: {root_path} -> {dest}")
         break
 """),
+    make_cell("code", """!python scripts/convert_crack500.py --src data/datasets/crack500 --dst data/datasets/crack500_yolo"""),
     make_cell("code", """# Run Ablation 2 (No Feature MSE)
 import sys
 sys.path.insert(0, ".")
@@ -553,13 +563,7 @@ nb5c_cells = [
 This notebook runs **Ablation 3**: Knowledge Distillation on Crack500 with **Boundary BCE Loss disabled** ($\gamma = 0$).
 * **Goal**: Measure the impact of boundary-specific pixel BCE loss on thin crack edge precision.
 * **Input Dataset**: Crack500 + pre-computed SAM 2 teacher logits."""),
-
-    make_cell("code", """!mkdir -p configs utils distillation scripts checkpoints data/datasets data/teacher_logits_box runs"""),
-    make_cell("code", """!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas"""),
-    make_cell("code", """# Auto-fetch project modules to ensure 100% self-contained execution on Kaggle
-!git clone https://github.com/shahin1717/crackdistill.git repo_code || true
-!cp -r repo_code/distillation repo_code/utils repo_code/configs repo_code/scripts .
-"""),
+] + get_self_contained_writefile_cells() + [
     make_cell("code", """import os, shutil
 from pathlib import Path
 input_dir = Path("/kaggle/input/distill_datasetforme")
@@ -576,6 +580,7 @@ for root, dirs, files in os.walk(str(input_dir)):
         print(f"Linked Crack500: {root_path} -> {dest}")
         break
 """),
+    make_cell("code", """!python scripts/convert_crack500.py --src data/datasets/crack500 --dst data/datasets/crack500_yolo"""),
     make_cell("code", """# Run Ablation 3 (No Boundary BCE)
 import sys
 sys.path.insert(0, ".")
@@ -611,13 +616,7 @@ nb5d_cells = [
 This notebook runs **Ablation 4**: Knowledge Distillation on DeepCrack with **Segmentation Head Frozen throughout the ENTIRE training run** (not just Stage 1).
 * **Goal**: Compare full-run head freezing against 2-stage progressive unfreezing.
 * **Input Dataset**: DeepCrack + pre-computed SAM 2 teacher logits."""),
-
-    make_cell("code", """!mkdir -p configs utils distillation scripts checkpoints data/datasets data/teacher_logits_box runs"""),
-    make_cell("code", """!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas"""),
-    make_cell("code", """# Auto-fetch project modules to ensure 100% self-contained execution on Kaggle
-!git clone https://github.com/shahin1717/crackdistill.git repo_code || true
-!cp -r repo_code/distillation repo_code/utils repo_code/configs repo_code/scripts .
-"""),
+] + get_self_contained_writefile_cells() + [
     make_cell("code", """import os, shutil
 from pathlib import Path
 input_dir = Path("/kaggle/input/distill_datasetforme")
@@ -634,6 +633,7 @@ for root, dirs, files in os.walk(str(input_dir)):
         print(f"Linked DeepCrack: {root_path} -> {dest}")
         break
 """),
+    make_cell("code", """!python scripts/convert_deepcrack.py --src data/datasets/deepcrack --dst data/datasets/deepcrack_yolo"""),
     make_cell("code", """# Run Ablation 4 (Full-Run SegHead Frozen)
 import sys
 sys.path.insert(0, ".")
@@ -672,14 +672,7 @@ nb5e_cells = [
 This notebook evaluates all trained model checkpoints from `nb2`, `nb3`, and `nb5a-d` to generate the master academic comparison table.
 * **Input Checkpoints**: `best.pt` files from all ablation and production runs.
 * **Outputs**: Master Markdown table with Mask mAP50, Mask mAP50-95, Box mAP50, and Precision/Recall."""),
-
-    make_cell("code", """!mkdir -p configs utils distillation scripts checkpoints data/datasets"""),
-    make_cell("code", """!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas"""),
-    make_cell("code", """# Auto-fetch project modules to ensure 100% self-contained execution on Kaggle
-!git clone https://github.com/shahin1717/crackdistill.git repo_code || true
-!cp -r repo_code/distillation repo_code/utils repo_code/configs repo_code/scripts .
-"""),
-
+] + get_self_contained_writefile_cells() + [
     make_cell("code", """import pandas as pd
 from pathlib import Path
 from ultralytics import YOLO
@@ -722,4 +715,5 @@ print(df.to_string(index=False))
 with open(out_dir / "nb5e_ablation_results_summary.ipynb", "w") as f:
     json.dump(make_nb(nb5e_cells), f, indent=1, ensure_ascii=False)
 print("Created nb5e_ablation_results_summary.ipynb")
+
 
