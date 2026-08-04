@@ -435,6 +435,7 @@ config_loader_code = Path("utils/config_loader.py").read_text(encoding="utf-8")
 kd_trainer_code = Path("distillation/kd_trainer.py").read_text(encoding="utf-8")
 convert_crack500_code = Path("scripts/convert_crack500.py").read_text(encoding="utf-8")
 convert_deepcrack_code = Path("scripts/convert_deepcrack.py").read_text(encoding="utf-8")
+generate_teacher_logits_code = Path("scripts/generate_teacher_logits.py").read_text(encoding="utf-8")
 
 def get_self_contained_writefile_cells():
     return [
@@ -447,7 +448,67 @@ def get_self_contained_writefile_cells():
         make_cell("code", f"%%writefile distillation/kd_trainer.py\n{kd_trainer_code}"),
         make_cell("code", f"%%writefile scripts/convert_crack500.py\n{convert_crack500_code}"),
         make_cell("code", f"%%writefile scripts/convert_deepcrack.py\n{convert_deepcrack_code}"),
+        make_cell("code", f"%%writefile scripts/generate_teacher_logits.py\n{generate_teacher_logits_code}"),
     ]
+
+# Shared helper cell snippet for linking/generating logits for Crack500
+crack500_dataset_setup_cell = make_cell("code", """import os, shutil
+from pathlib import Path
+input_dir = Path("/kaggle/input/distill_datasetforme")
+if not input_dir.exists(): input_dir = Path("/kaggle/input")
+datasets_dir = Path("data/datasets")
+datasets_dir.mkdir(parents=True, exist_ok=True)
+checkpoints_dir = Path("checkpoints")
+checkpoints_dir.mkdir(parents=True, exist_ok=True)
+
+# 1. Link Crack500 dataset
+for root, dirs, files in os.walk(str(input_dir)):
+    root_path = Path(root)
+    if "traincrop" in dirs:
+        dest = datasets_dir / "crack500"
+        if os.path.lexists(dest): os.unlink(dest) if os.path.islink(dest) else shutil.rmtree(dest)
+        os.symlink(root_path, dest)
+        print(f"Linked Crack500: {root_path} -> {dest}")
+        break
+
+# 2. Link precomputed teacher logits if available
+found_logits = False
+for root, dirs, files in os.walk(str(input_dir)):
+    root_p = Path(root)
+    if "teacher_logits_box" in dirs:
+        src_f = root_p / "teacher_logits_box"
+        dst_f = Path("data/teacher_logits_box")
+        if os.path.lexists(dst_f): os.unlink(dst_f) if os.path.islink(dst_f) else shutil.rmtree(dst_f)
+        os.symlink(src_f, dst_f)
+        print(f"Linked precomputed teacher_logits_box: {src_f} -> {dst_f}")
+        found_logits = True
+        break
+    if "teacher_features" in dirs:
+        src_f = root_p / "teacher_features"
+        dst_f = Path("data/teacher_features")
+        if os.path.lexists(dst_f): os.unlink(dst_f) if os.path.islink(dst_f) else shutil.rmtree(dst_f)
+        os.symlink(src_f, dst_f)
+        print(f"Linked precomputed teacher_features: {src_f} -> {dst_f}")
+""")
+
+crack500_logits_generation_cell = make_cell("code", """# Ensure YOLO dataset & SAM 2 teacher logits exist
+!python scripts/convert_crack500.py --src data/datasets/crack500 --dst data/datasets/crack500_yolo
+
+from pathlib import Path
+logits_dir = Path("data/teacher_logits_box")
+logits_count = len(list(logits_dir.glob("*_logits.npy"))) if logits_dir.exists() else 0
+print(f"Found {logits_count} teacher logit files in {logits_dir}")
+
+if logits_count == 0:
+    print("=== Generating SAM 2 Box-Only Logits ===")
+    checkpoints_dir = Path("checkpoints")
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_file = checkpoints_dir / "sam2_hiera_large.pt"
+    if not ckpt_file.exists():
+        !wget -q https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt -O checkpoints/sam2_hiera_large.pt
+    !pip install -q SAM-2 || pip install -q git+https://github.com/facebookresearch/segment-anything-2.git
+    !python scripts/generate_teacher_logits.py --prompt-type box --logits-dir data/teacher_logits_box --dataset data/datasets/crack500_yolo
+""")
 
 # ==============================================================================
 # NOTEBOOK 5a: nb5a_ablation_no_mask_kd.ipynb
@@ -458,23 +519,8 @@ This notebook runs **Ablation 1**: Knowledge Distillation on Crack500 with **Mas
 * **Goal**: Measure how much performance and OOD generalization drop when soft KL logit distillation is removed.
 * **Input Dataset**: Crack500 + pre-computed SAM 2 teacher logits/features."""),
 ] + get_self_contained_writefile_cells() + [
-    make_cell("code", """import os, shutil
-from pathlib import Path
-input_dir = Path("/kaggle/input/distill_datasetforme")
-if not input_dir.exists(): input_dir = Path("/kaggle/input")
-datasets_dir = Path("data/datasets")
-datasets_dir.mkdir(parents=True, exist_ok=True)
-
-for root, dirs, files in os.walk(str(input_dir)):
-    root_path = Path(root)
-    if "traincrop" in dirs:
-        dest = datasets_dir / "crack500"
-        if os.path.lexists(dest): os.unlink(dest) if os.path.islink(dest) else shutil.rmtree(dest)
-        os.symlink(root_path, dest)
-        print(f"Linked Crack500: {root_path} -> {dest}")
-        break
-"""),
-    make_cell("code", """!python scripts/convert_crack500.py --src data/datasets/crack500 --dst data/datasets/crack500_yolo"""),
+    crack500_dataset_setup_cell,
+    crack500_logits_generation_cell,
     make_cell("code", """# Run Ablation 1 (No Mask KL)
 import sys
 sys.path.insert(0, ".")
@@ -485,6 +531,7 @@ cfg = load_config("configs/config.yaml")
 cfg = override_config(cfg, {
     "project.name": "crack_distill",
     "project.experiment": "ablation_no_mask_kd",
+    "data.datasets": [{"name": "crack500", "path": "data/datasets/crack500_yolo", "format": "yolo"}],
     "distillation.enabled": True,
     "distillation.losses.mask_kd.enabled": False,
     "distillation.losses.feature.enabled": True,
@@ -511,23 +558,8 @@ This notebook runs **Ablation 2**: Knowledge Distillation on Crack500 with **Int
 * **Goal**: Measure how much representation transfer relies on intermediate backbone feature MSE.
 * **Input Dataset**: Crack500 + pre-computed SAM 2 teacher logits."""),
 ] + get_self_contained_writefile_cells() + [
-    make_cell("code", """import os, shutil
-from pathlib import Path
-input_dir = Path("/kaggle/input/distill_datasetforme")
-if not input_dir.exists(): input_dir = Path("/kaggle/input")
-datasets_dir = Path("data/datasets")
-datasets_dir.mkdir(parents=True, exist_ok=True)
-
-for root, dirs, files in os.walk(str(input_dir)):
-    root_path = Path(root)
-    if "traincrop" in dirs:
-        dest = datasets_dir / "crack500"
-        if os.path.lexists(dest): os.unlink(dest) if os.path.islink(dest) else shutil.rmtree(dest)
-        os.symlink(root_path, dest)
-        print(f"Linked Crack500: {root_path} -> {dest}")
-        break
-"""),
-    make_cell("code", """!python scripts/convert_crack500.py --src data/datasets/crack500 --dst data/datasets/crack500_yolo"""),
+    crack500_dataset_setup_cell,
+    crack500_logits_generation_cell,
     make_cell("code", """# Run Ablation 2 (No Feature MSE)
 import sys
 sys.path.insert(0, ".")
@@ -538,6 +570,7 @@ cfg = load_config("configs/config.yaml")
 cfg = override_config(cfg, {
     "project.name": "crack_distill",
     "project.experiment": "ablation_no_feature",
+    "data.datasets": [{"name": "crack500", "path": "data/datasets/crack500_yolo", "format": "yolo"}],
     "distillation.enabled": True,
     "distillation.losses.mask_kd.enabled": True,
     "distillation.losses.feature.enabled": False,
@@ -564,23 +597,8 @@ This notebook runs **Ablation 3**: Knowledge Distillation on Crack500 with **Bou
 * **Goal**: Measure the impact of boundary-specific pixel BCE loss on thin crack edge precision.
 * **Input Dataset**: Crack500 + pre-computed SAM 2 teacher logits."""),
 ] + get_self_contained_writefile_cells() + [
-    make_cell("code", """import os, shutil
-from pathlib import Path
-input_dir = Path("/kaggle/input/distill_datasetforme")
-if not input_dir.exists(): input_dir = Path("/kaggle/input")
-datasets_dir = Path("data/datasets")
-datasets_dir.mkdir(parents=True, exist_ok=True)
-
-for root, dirs, files in os.walk(str(input_dir)):
-    root_path = Path(root)
-    if "traincrop" in dirs:
-        dest = datasets_dir / "crack500"
-        if os.path.lexists(dest): os.unlink(dest) if os.path.islink(dest) else shutil.rmtree(dest)
-        os.symlink(root_path, dest)
-        print(f"Linked Crack500: {root_path} -> {dest}")
-        break
-"""),
-    make_cell("code", """!python scripts/convert_crack500.py --src data/datasets/crack500 --dst data/datasets/crack500_yolo"""),
+    crack500_dataset_setup_cell,
+    crack500_logits_generation_cell,
     make_cell("code", """# Run Ablation 3 (No Boundary BCE)
 import sys
 sys.path.insert(0, ".")
@@ -591,6 +609,7 @@ cfg = load_config("configs/config.yaml")
 cfg = override_config(cfg, {
     "project.name": "crack_distill",
     "project.experiment": "ablation_no_boundary",
+    "data.datasets": [{"name": "crack500", "path": "data/datasets/crack500_yolo", "format": "yolo"}],
     "distillation.enabled": True,
     "distillation.losses.mask_kd.enabled": True,
     "distillation.losses.feature.enabled": True,
@@ -611,19 +630,16 @@ print("Created nb5c_ablation_no_boundary_bce.ipynb")
 # ==============================================================================
 # NOTEBOOK 5d: nb5d_ablation_seghead_frozen.ipynb
 # ==============================================================================
-nb5d_cells = [
-    make_cell("markdown", """# 🔬 Notebook 5d: Ablation 4 — Full-Run Segmentation Head Freezing
-This notebook runs **Ablation 4**: Knowledge Distillation on DeepCrack with **Segmentation Head Frozen throughout the ENTIRE training run** (not just Stage 1).
-* **Goal**: Compare full-run head freezing against 2-stage progressive unfreezing.
-* **Input Dataset**: DeepCrack + pre-computed SAM 2 teacher logits."""),
-] + get_self_contained_writefile_cells() + [
-    make_cell("code", """import os, shutil
+deepcrack_dataset_setup_cell = make_cell("code", """import os, shutil
 from pathlib import Path
 input_dir = Path("/kaggle/input/distill_datasetforme")
 if not input_dir.exists(): input_dir = Path("/kaggle/input")
 datasets_dir = Path("data/datasets")
 datasets_dir.mkdir(parents=True, exist_ok=True)
+checkpoints_dir = Path("checkpoints")
+checkpoints_dir.mkdir(parents=True, exist_ok=True)
 
+# 1. Link DeepCrack dataset
 for root, dirs, files in os.walk(str(input_dir)):
     root_path = Path(root)
     if "train_img" in dirs:
@@ -632,8 +648,54 @@ for root, dirs, files in os.walk(str(input_dir)):
         os.symlink(root_path, dest)
         print(f"Linked DeepCrack: {root_path} -> {dest}")
         break
-"""),
-    make_cell("code", """!python scripts/convert_deepcrack.py --src data/datasets/deepcrack --dst data/datasets/deepcrack_yolo"""),
+
+# 2. Link precomputed teacher logits if available
+found_logits = False
+for root, dirs, files in os.walk(str(input_dir)):
+    root_p = Path(root)
+    if "teacher_logits_box" in dirs:
+        src_f = root_p / "teacher_logits_box"
+        dst_f = Path("data/teacher_logits_box")
+        if os.path.lexists(dst_f): os.unlink(dst_f) if os.path.islink(dst_f) else shutil.rmtree(dst_f)
+        os.symlink(src_f, dst_f)
+        print(f"Linked precomputed teacher_logits_box: {src_f} -> {dst_f}")
+        found_logits = True
+        break
+    if "teacher_features" in dirs:
+        src_f = root_p / "teacher_features"
+        dst_f = Path("data/teacher_features")
+        if os.path.lexists(dst_f): os.unlink(dst_f) if os.path.islink(dst_f) else shutil.rmtree(dst_f)
+        os.symlink(src_f, dst_f)
+        print(f"Linked precomputed teacher_features: {src_f} -> {dst_f}")
+""")
+
+deepcrack_logits_generation_cell = make_cell("code", """# Ensure DeepCrack YOLO dataset & SAM 2 teacher logits exist
+!python scripts/convert_deepcrack.py --src data/datasets/deepcrack --dst data/datasets/deepcrack_yolo
+
+from pathlib import Path
+logits_dir = Path("data/teacher_logits_box")
+logits_count = len(list(logits_dir.glob("*_logits.npy"))) if logits_dir.exists() else 0
+print(f"Found {logits_count} teacher logit files in {logits_dir}")
+
+if logits_count == 0:
+    print("=== Generating SAM 2 Box-Only Logits for DeepCrack ===")
+    checkpoints_dir = Path("checkpoints")
+    checkpoints_dir.mkdir(parents=True, exist_ok=True)
+    ckpt_file = checkpoints_dir / "sam2_hiera_large.pt"
+    if not ckpt_file.exists():
+        !wget -q https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt -O checkpoints/sam2_hiera_large.pt
+    !pip install -q SAM-2 || pip install -q git+https://github.com/facebookresearch/segment-anything-2.git
+    !python scripts/generate_teacher_logits.py --prompt-type box --logits-dir data/teacher_logits_box --dataset data/datasets/deepcrack_yolo
+""")
+
+nb5d_cells = [
+    make_cell("markdown", """# 🔬 Notebook 5d: Ablation 4 — Full-Run Segmentation Head Freezing
+This notebook runs **Ablation 4**: Knowledge Distillation on DeepCrack with **Segmentation Head Frozen throughout the ENTIRE training run** (not just Stage 1).
+* **Goal**: Compare full-run head freezing against 2-stage progressive unfreezing.
+* **Input Dataset**: DeepCrack + pre-computed SAM 2 teacher logits."""),
+] + get_self_contained_writefile_cells() + [
+    deepcrack_dataset_setup_cell,
+    deepcrack_logits_generation_cell,
     make_cell("code", """# Run Ablation 4 (Full-Run SegHead Frozen)
 import sys
 sys.path.insert(0, ".")
@@ -644,6 +706,7 @@ cfg = load_config("configs/config.yaml")
 cfg = override_config(cfg, {
     "project.name": "crack_distill",
     "project.experiment": "ablation_seghead_frozen",
+    "data.datasets": [{"name": "deepcrack", "path": "data/datasets/deepcrack_yolo", "format": "yolo"}],
     "distillation.enabled": True,
     "distillation.progressive.enabled": True,
     "distillation.progressive.freeze_head": True,

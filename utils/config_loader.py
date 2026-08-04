@@ -21,6 +21,23 @@ class ConfigNode:
     def get(self, key, default=None):
         return getattr(self, key, default)
 
+    def keys(self):
+        return self.__dict__.keys()
+
+    def values(self):
+        return self.__dict__.values()
+
+    def items(self):
+        return self.__dict__.items()
+
+    def __getitem__(self, key):
+        if hasattr(self, key):
+            return getattr(self, key)
+        raise KeyError(key)
+
+    def __setitem__(self, key, value):
+        setattr(self, key, value)
+
     def __contains__(self, key):
         return hasattr(self, key)
 
@@ -28,7 +45,7 @@ class ConfigNode:
         return f"ConfigNode({self.__dict__})"
 
     def __iter__(self):
-        return iter(self.__dict__.items())
+        return iter(self.__dict__.keys())
 
     def dict(self):
         result = {}

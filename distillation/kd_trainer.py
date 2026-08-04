@@ -56,15 +56,18 @@ class KDYOLODataset(torch.utils.data.Dataset):
                 except Exception:
                     pass
 
-                if self.kd_cfg.losses.feature.enabled and f_path.exists():
-                    try:
-                        with np.load(str(f_path)) as data:
-                            sam_feat = {
-                                "image_embed": torch.from_numpy(data["image_embed"]).float(),
-                                "feat1": torch.from_numpy(data["feat1"]).float()
-                            }
-                    except Exception:
-                        pass
+                if self.kd_cfg.losses.feature.enabled:
+                    if not f_path.exists():
+                        f_path = self.logits_dir / f"{prefix}_features.npz"
+                    if f_path.exists():
+                        try:
+                            with np.load(str(f_path)) as data:
+                                sam_feat = {
+                                    "image_embed": torch.from_numpy(data["image_embed"]).float(),
+                                    "feat1": torch.from_numpy(data["feat1"]).float()
+                                }
+                        except Exception:
+                            pass
                 break
 
         item["sam_target"] = sam_target
@@ -95,12 +98,127 @@ class KDSegmentationTrainer(SegmentationTrainer):
     # Class-level attribute to store hooked features safely
     student_features = {}
 
-    def __init__(self, cfg, logits_dir=None, kd_cfg=None, **kwargs):
-        super().__init__(cfg, **kwargs)
-        
-        # Under DDP, Ultralytics reinstantiates custom trainers using: CustomTrainer(cfg=cfg, overrides=overrides)
-        # Since we avoid passing custom args in overrides to prevent get_cfg checks, we read them from environment variables.
+    def __init__(self, cfg=None, overrides=None, _callbacks=None, logits_dir=None, kd_cfg=None, **kwargs):
         import os
+        from pathlib import Path
+
+        # Auto-convert master ConfigNode / master dict into Ultralytics cfg if master config passed directly
+        if hasattr(cfg, "student") or (isinstance(cfg, dict) and "student" in cfg):
+            master_cfg = cfg
+            if kd_cfg is None:
+                if hasattr(master_cfg, "distillation"):
+                    kd_cfg = master_cfg.distillation
+                elif isinstance(master_cfg, dict) and "distillation" in master_cfg:
+                    kd_cfg = master_cfg["distillation"]
+
+            if logits_dir is None:
+                if hasattr(master_cfg, "teacher") and hasattr(master_cfg.teacher, "logits_dir"):
+                    logits_dir = master_cfg.teacher.logits_dir
+                elif isinstance(master_cfg, dict) and "teacher" in master_cfg and "logits_dir" in master_cfg["teacher"]:
+                    logits_dir = master_cfg["teacher"]["logits_dir"]
+
+            # Backbone model
+            model_name = "yolo11n-seg"
+            if hasattr(master_cfg, "student") and hasattr(master_cfg.student, "backbone"):
+                model_name = master_cfg.student.backbone
+            elif isinstance(master_cfg, dict) and "student" in master_cfg and "backbone" in master_cfg["student"]:
+                model_name = master_cfg["student"]["backbone"]
+            if not str(model_name).endswith(".pt"):
+                model_name = f"{model_name}.pt"
+
+            # Data YAML path
+            data_path = "data/datasets/crack500_yolo/dataset.yaml"
+            if hasattr(master_cfg, "data"):
+                if hasattr(master_cfg.data, "datasets") and len(master_cfg.data.datasets) > 0:
+                    d_p = master_cfg.data.datasets[0].path
+                    candidate = d_p if str(d_p).endswith(".yaml") else os.path.join(d_p, "dataset.yaml")
+                    if os.path.exists(candidate):
+                        data_path = candidate
+                    elif os.path.exists("data/datasets/crack500_yolo/dataset.yaml"):
+                        data_path = "data/datasets/crack500_yolo/dataset.yaml"
+                elif hasattr(master_cfg.data, "path"):
+                    d_p = master_cfg.data.path
+                    data_path = d_p if str(d_p).endswith(".yaml") else os.path.join(d_p, "dataset.yaml")
+            elif isinstance(master_cfg, dict) and "data" in master_cfg:
+                d_dict = master_cfg["data"]
+                if "datasets" in d_dict and len(d_dict["datasets"]) > 0:
+                    d_p = d_dict["datasets"][0].get("path", data_path) if isinstance(d_dict["datasets"][0], dict) else getattr(d_dict["datasets"][0], "path", data_path)
+                    data_path = d_p if str(d_p).endswith(".yaml") else os.path.join(d_p, "dataset.yaml")
+
+            check_data = (overrides.get("data") if overrides and isinstance(overrides, dict) else None) or data_path
+            if check_data and not Path(check_data).exists():
+                alt = Path("data/datasets/combined_yolo/dataset.yaml")
+                if alt.exists():
+                    check_data = str(alt)
+                    data_path = check_data
+                    if overrides and isinstance(overrides, dict) and "data" in overrides:
+                        overrides["data"] = check_data
+                elif os.path.exists("data/datasets/crack500_yolo/dataset.yaml"):
+                    check_data = "data/datasets/crack500_yolo/dataset.yaml"
+                    data_path = check_data
+                    if overrides and isinstance(overrides, dict) and "data" in overrides:
+                        overrides["data"] = check_data
+
+            # Safely fix hardcoded absolute paths in dataset.yaml.
+            # The dataset folder may be a symlink to a read-only /kaggle/input path,
+            # so we NEVER write to the symlink target.
+            # Instead, we copy dataset.yaml to a writable local path and use that copy.
+            if check_data and Path(check_data).exists():
+                try:
+                    import shutil as _shutil
+                    yaml_p = Path(check_data)
+                    # Resolve the ACTUAL target to check if it is read-only
+                    real_yaml = yaml_p.resolve()
+                    abs_dset_dir = str(yaml_p.parent.resolve())
+                    original_text = real_yaml.read_text()
+                    fixed_lines = [f"path: {abs_dset_dir}" if l.strip().startswith("path:") else l for l in original_text.splitlines()]
+                    fixed_text = "\n".join(fixed_lines) + "\n"
+                    # Only write if the text actually changed
+                    if fixed_text != original_text:
+                        # Try writing in place (works if writable)
+                        try:
+                            yaml_p.write_text(fixed_text)
+                            print(f"[KD] Fixed dataset.yaml path in-place: {abs_dset_dir}")
+                        except OSError:
+                            # Read-only filesystem (Kaggle input symlink): copy to local writable dir
+                            local_yaml_dir = Path("data/datasets_yaml")
+                            local_yaml_dir.mkdir(parents=True, exist_ok=True)
+                            local_yaml = local_yaml_dir / yaml_p.parent.name / "dataset.yaml"
+                            local_yaml.parent.mkdir(parents=True, exist_ok=True)
+                            local_yaml.write_text(fixed_text)
+                            data_path = str(local_yaml)
+                            if overrides and isinstance(overrides, dict) and "data" in overrides:
+                                overrides["data"] = str(local_yaml)
+                            print(f"[KD] Read-only symlink — copied fixed dataset.yaml to: {local_yaml}")
+                except Exception as e:
+                    print(f"[KD Warning] dataset.yaml path fix skipped: {e}")
+
+            proj_name = getattr(getattr(master_cfg, "project", None), "name", "runs")
+            exp_name = getattr(getattr(master_cfg, "project", None), "experiment", "exp")
+
+            auto_overrides = {
+                "model": model_name,
+                "data": data_path,
+                "epochs": getattr(getattr(master_cfg, "train", None), "epochs", 150),
+                "imgsz": getattr(getattr(master_cfg, "student", None), "imgsz", getattr(getattr(master_cfg, "data", None), "image_size", 512)),
+                "batch": getattr(getattr(master_cfg, "data", None), "batch_size", 16),
+                "amp": getattr(getattr(master_cfg, "train", None), "amp", False),
+                "lr0": getattr(getattr(master_cfg, "train", None), "lr", 0.001),
+                "weight_decay": getattr(getattr(master_cfg, "train", None), "weight_decay", 0.0005),
+                "project": str(proj_name),
+                "name": str(exp_name),
+                "exist_ok": True,
+                "task": "segment",
+            }
+            if overrides and isinstance(overrides, dict):
+                auto_overrides.update(overrides)
+
+            from ultralytics.cfg import get_cfg
+            cfg = get_cfg(overrides=auto_overrides)
+            overrides = None
+
+        super().__init__(cfg=cfg, overrides=overrides, _callbacks=_callbacks, **kwargs)
+
         if logits_dir is None:
             logits_dir = os.environ.get("KD_LOGITS_DIR", "data/teacher_logits/")
                 
@@ -141,9 +259,18 @@ class KDSegmentationTrainer(SegmentationTrainer):
         self._sam_features = {}  # image_stem → dict of features
         self._hook_handles = []
 
+        logit_files = list(self.logits_dir.glob("*.npy"))
         print(f"[KD] logits_dir : {self.logits_dir}")
-        print(f"[KD] logit files: {len(list(self.logits_dir.glob('*_logits.npy')))}")
+        print(f"[KD] logit files: {len(logit_files)}")
         print(f"[KD] temperature: {self.temperature}")
+
+        is_kd_enabled = hasattr(self.kd_cfg, "enabled") and getattr(self.kd_cfg, "enabled")
+        if is_kd_enabled and len(logit_files) == 0:
+            raise RuntimeError(
+                f"[KD FATAL ERROR] logits_dir '{self.logits_dir}' contains 0 logit files (*.npy)!\n"
+                f"Knowledge distillation cannot proceed without precomputed teacher logits.\n"
+                f"Please ensure the teacher logits dataset is attached and linked properly to '{self.logits_dir}'."
+            )
 
     def setup_model(self):
         """Build model, set up projection layers and hooks, and call parent setup."""

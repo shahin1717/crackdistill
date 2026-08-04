@@ -2,7 +2,7 @@
 
 **Author:** Shahin  
 **Date:** July 2026  
-**Status:** Work in progress — 24 experiments completed, ablations and SAM 3 integration planned
+**Status:** Work in progress — 27 experiments completed (ablations nb5a–c run but logit-upload bug invalidated results; EXP-27–29 planned as corrected re-run)
 
 ---
 
@@ -82,6 +82,10 @@ The two datasets represent **asymmetric domains**:
 
 This creates an asymmetric domain gap with a decisive practical implication: **train on Crack500, transfer to DeepCrack** is viable; the reverse collapses (see Section 6.4).
 
+**Manifold Coverage Argument for Dataset Selection:** In knowledge distillation, the training set acts as the query set for the teacher — the student learns to mimic the teacher only on the input manifold covered by the training data. Crack500's wide coverage of pavement types, lighting conditions, and crack widths means a student trained on it spans a large region of the teacher's decision boundary. DeepCrack's narrow, controlled-acquisition manifold (537 images, uniform thin-crack, high-contrast texture) constrains the student to a small region — it never learns to probe SAM 2 on diverse pavement, diffuse crack textures, or variable lighting. This is why DeepCrack → Crack500 transfer collapses to `Mask mAP50 = 0.033`: the student has never queried the teacher on the diverse Crack500 distribution, so its learned representations fail entirely when deployed there (EXP-24). This argument is supported by work on dataset diversity in knowledge distillation: when the training distribution is narrow, the student captures only a small slice of the teacher's decision boundary, leading to catastrophic failure outside that slice (see *Improving the Distillation Effectiveness by Expanding the Training Data Distribution*, Tang et al., 2023). This motivates Crack500 as the primary training source for any distillation experiment targeting deployment-level generalization.
+
+**Why size alone does not fully explain the gap:** Crack500 has ~3× more images than DeepCrack (1,896 vs 537 training images), which compounds the domain gap. However, the 8× performance difference (0.274 vs 0.033) between the two directions is disproportionate relative to the size ratio, suggesting distribution breadth — not merely volume — is the primary driver. A model trained on DeepCrack with 1,500 images (hypothetically) would still fail on Crack500's different texture regime. Dataset *diversity* is the key variable.
+
 ---
 
 ## 4. Method
@@ -160,18 +164,45 @@ The 60% weight on OOD reflects our deployment goal of generalization, not in-dis
 
 **Note:** These weights are highly sensitive. Small changes in the $\alpha / \beta$ ratio significantly impact OOD performance. Finding optimal weights remains an open research problem.
 
-### 4.5 Numerical Stability Fix: Logit Clamping
+### 4.5 Numerical Stability Fix: FP16 Overflow in KL Divergence
 
-SAM 2 produces raw logits with magnitudes up to $\pm 50$ or higher. In FP16 training:
+#### Why FP16 Fails with KD Logits
 
-$$\log\!\left(\sigma\!\left(\frac{z_t}{\tau}\right)\right) \xrightarrow{\text{FP16}} \log(0) = -\infty \rightarrow \text{NaN}$$
+SAM 2 produces raw logits with magnitudes up to $\pm 50$ or higher. FP16's representable range caps at 65,504 with a minimum positive normal of $\approx 6.1 \times 10^{-5}$. Two failure modes occur:
 
-EXP-05 and EXP-06 both crashed at epochs 42–44 due to this overflow. The fix is two-part:
+**Overflow path:** Computing softmax naively, $\exp(50) \approx 5.18 \times 10^{21}$ overflows FP16 to `inf`.
+
+**Underflow path:** Even with the numerically stable softmax trick (subtracting the max logit), a logit range spanning $[-50, +50]$ produces $\exp(-100) \approx 3.7 \times 10^{-44}$, which **underflows to exact zero** in FP16. The KL divergence term then becomes:
+
+$$D_{KL} = \sum_i P_i (\log P_i - \log Q_i)$$
+
+If student probability $Q_i = 0$, then $\log Q_i = -\infty$. If teacher $P_i = 0$ simultaneously, we get $0 \cdot (-\infty) = \text{NaN}$. If $P_i > 0$ and $Q_i = 0$, division by zero creates $\infty$, which propagates backwards as NaN gradients. This explains why crashes appear at epochs 42–44 rather than epoch 1 — gradient instability accumulates before destabilizing training. AMP's gradient scaler (Micikevicius et al., ICLR 2018) does not prevent this because the NaN originates in the KD loss itself, before backpropagation, and NaN propagation bypasses gradient scaling entirely.
+
+#### Original Fix (EXP-07 onward)
+
+EXP-05 and EXP-06 both crashed at epochs 42–44. The initial fix was two-part:
 
 1. **Clamp teacher logits:** $z_t \leftarrow \text{clip}(z_t, -30, 30)$ before any KL computation
 2. **Disable AMP:** Set `amp: false` — use FP32 throughout
 
-This completely eliminated NaN crashes from EXP-07 onward.
+**Limitation of clamping:** Clipping teacher logits to $[-30, 30]$ eliminates the overflow but also truncates the high-confidence predictions that SAM 2 produces for obvious crack interiors — exactly the signal most useful for learning crack texture. At $\tau = 3.78$, a logit of 30 gives $\sigma(30/3.78) = \sigma(7.94) \approx 0.9997$ — these are SAM's most certain predictions and carry the strongest training signal for crack interior pixels. Clamping them to 30 loses information. At $\pm 50$, $\sigma(50/3.78) \approx 1.000$, which is the same confidence to four decimal places but with 67% larger magnitude distortion under FP16.
+
+#### Improved Fix (EXP-25, Planned)
+
+The correct solution, following Micikevicius et al. (ICLR 2018), is to cast only the KD loss computation to FP32, keeping the rest of training in FP16:
+
+```python
+with torch.cuda.amp.autocast(enabled=False):
+    loss_kd = F.kl_div(
+        F.log_softmax(student_logits.float() / tau, dim=-1),
+        F.softmax(teacher_logits.float() / tau, dim=-1),
+        reduction='batchmean'
+    ) * (tau ** 2)
+```
+
+This preserves FP16 training speed (~1.5–2× faster than FP32) while resolving NaN crashes without distorting the teacher's probability distribution. EXP-25 tests this approach directly against EXP-08.
+
+**Alternative — bfloat16:** On Ampere GPUs (T4 does not support bfloat16), using `torch.bfloat16` would be the cleanest fix: bfloat16 has the same exponent range as FP32 (8 bits vs. FP16's 5 bits), eliminating overflow entirely at only a marginal precision cost. Kaggle's Tesla T4 does not support bfloat16, so this is a future hardware-dependent option.
 
 ### 4.6 Progressive Segmentation Head Freeze (for Small Datasets)
 
@@ -257,7 +288,7 @@ Best discovered configuration: $\tau=3.78$, $\alpha=0.96$, $\beta=1.87$, $\gamma
 | Uncropped (OOD) | Mask mAP50 | 0.1242 | **0.1308** | $+5.3\%$ |
 | Uncropped (OOD) | Mask mAP50-95 | 0.0319 | **0.0352** | **$+10.3\%$** |
 
-**Key insight:** The slight in-distribution drop is expected and desirable — it signals the model is generalizing rather than memorizing crop boundaries. The OOD improvement is the actual contribution.
+**Key insight — KD as domain regularizer:** The $-1.85\%$ in-distribution drop is expected and desirable. Hard labels encourage high-confidence predictions that memorize dataset-specific shortcuts (crop boundary positions, fixed background textures). SAM 2's soft labels convey uncertainty — for example, a boundary pixel is predicted as "85% crack, 15% background" rather than a hard 1/0 — which acts as **implicit label smoothing** (Dong et al., 2021; Hinton et al., 2015). This prevents the student from over-fitting to in-distribution artifacts, at a cost of $-1.85\%$ in-distribution mAP and a gain of $+10.3\%$ OOD mAP50-95. This is a textbook bias-variance tradeoff: the model trades a marginal amount of in-distribution precision for substantially improved out-of-distribution robustness. The OOD improvement is the actual contribution.
 
 ---
 
@@ -343,6 +374,11 @@ KD recovers some performance (+19.0% relative on Mask mAP50), but the absolute n
 | EXP-22 | Deep→C500 | YOLOv8n | Baseline cross-eval | — | 0.030 | — | Done |
 | EXP-23 | Deep→C500 | YOLOv11n | Baseline cross-eval | — | 0.028 | — | Done |
 | EXP-24 | Deep→C500 | YOLOv11n | Full KD cross-eval | — | 0.033 | — | Done — +19% relative |
+| **EXP-25** | Crack500 | YOLOv11n | **Full KD (local FP32 cast, no clamp)** | **150** | — | — | **Planned — AMP fix test** |
+| **EXP-26** | Crack500 | YOLOv11n | **Full KD (batch=32, 2× LR, warmup)** | **150** | — | — | **Planned — batch size test** |
+| **EXP-27** | Crack500 | YOLOv11n | **Ablation: no $L_{KL}$ (logits uploaded correctly)** | **150** | — | — | **Planned — corrected ablation** |
+| **EXP-28** | Crack500 | YOLOv11n | **Ablation: no $L_{feature}$ (logits uploaded correctly)** | **150** | — | — | **Planned — corrected ablation** |
+| **EXP-29** | Crack500 | YOLOv11n | **Ablation: no $L_{boundary}$ (logits uploaded correctly)** | **150** | — | — | **Planned — corrected ablation** |
 
 ---
 
@@ -440,16 +476,43 @@ This work contributes:
 
 The KD loss weights ($\alpha$, $\beta$, $\gamma$) are highly sensitive. The Optuna search explored only 10–12 trials on a 15-epoch proxy objective — a small search. Better weight discovery may yield significantly stronger results. This is the highest-priority open research question.
 
-### 11.2 Ablation Study (NB5 — Planned)
+### 11.2a AMP Fix Validation (EXP-25 — Planned)
 
-The following ablations are designed but not yet executed:
+Current experiments use `amp: false` + logit clamping to $[-30, 30]$. Logit clamping, while effective at preventing NaN crashes, distorts the teacher's high-confidence predictions — particularly the crack interior pixels where SAM 2 produces logits up to $\pm 50$. EXP-25 replaces this with local FP32 casting around the KD loss computation only (using `autocast(enabled=False)`), re-enabling FP16 for the rest of training. Expected benefit: no distribution distortion, ~1.5–2× faster training vs `amp: false`. The gradient scaler remains active for non-KD loss components. Results will determine whether Section 4.5 should recommend clamping or local FP32 casting as the standard fix.
 
-| Ablation | What is removed | Expected finding |
+### 11.2b Batch Size Sensitivity (EXP-26 — Planned)
+
+All experiments used batch=16. KD soft labels produce **denser, higher-variance gradients** than hard one-hot labels. In hard-label training, only correct-class logits receive gradient signal. In KD with soft masks, every pixel receives gradient from the teacher's probability distribution — the student's gradient computation spans the full mask area per instance. This significantly increases per-step gradient noise relative to hard-label training of the same architecture.
+
+**Why larger batch helps:** Gradient variance from soft labels scales as $O(1/\sqrt{B})$ with batch size $B$. Increasing from 16 to 32 reduces this noise by $\sqrt{2} \approx 41\%$. With SAM 2 features pre-cached to disk (removing teacher from GPU memory), batch=32 requires only marginally more VRAM than batch=16 and fits comfortably within 16 GB.
+
+**Linear LR scaling:** Following Goyal et al. (2017), we scale learning rate linearly: $\text{lr}_{32} = \text{lr}_{16} \times (32/16) = 0.002$, with 5-epoch warmup to avoid early divergence.
+
+**Expected outcome:** Smoother convergence, potentially improved OOD mAP. The effect is expected to be modest (0–3% relative) because gradient variance is already partially controlled by the Optuna-tuned temperature $\tau = 3.78$ (higher $\tau$ softens the teacher distribution, reducing its variance). This is a verification experiment rather than a major expected improvement.
+
+### 11.2 Ablation Study (NB5 — Partial)
+
+Ablation notebooks nb5a, nb5b, and nb5c were run on Kaggle (2026-07-30). However, a **logit upload error** invalidated all three results:
+
+> **Root cause:** The SAM 2 teacher logits directory was not uploaded to the Kaggle dataset for the ablation sessions. All three notebooks printed `[KD] logit files: 0` at training start. When no logit files are found, the `KDYOLODataset` wrapper silently returns `sam_target=None` for every batch — the KD loss skips all images in every batch, effectively training as a vanilla fine-tune with no teacher signal at all.
+
+**Actual result:** All three ablations trained identically — not because the loss components are equivalent, but because **none of them received any KD signal at all**. Each converged to `Mask mAP50 = 0.558`, consistent with a standard fine-tune without distillation.
+
+**This is not a scientific result about the individual loss components.** It is a measurement of fine-tuning without KD, which is already known (EXP-13: `0.5445`).
+
+**Planned fix (EXP-27/28/29):** Upload teacher logits as a Kaggle dataset attachment and re-run all three ablations. Each corrected ablation will:
+- Confirm that logit files are found (`[KD] logit files: 1896`)
+- Disable exactly one loss term while keeping others active
+- Report both in-distribution mAP and OOD mAP
+
+**Expected findings (from theoretical priors):**
+
+| Ablation (EXP) | What is removed | Expected finding |
 |:---|:---|:---|
-| `ablation_no_mask_kd` | Remove $L_{\text{KL}}$ | OOD drops — logit soft targets matter |
-| `ablation_no_feature` | Remove $L_{\text{feature}}$ | Less backbone alignment |
-| `ablation_no_boundary` | Remove $L_{\text{boundary}}$ | Thin crack boundary quality drops |
-| `ablation_seghead_frozen` | Keep head frozen all training | Ceiling without fine-tuning |
+| EXP-27: `ablation_no_mask_kd` | Remove $L_{\text{KL}}$ ($\alpha = 0$) | **OOD drops most** — the soft logit distribution is the primary domain regularizer |
+| EXP-28: `ablation_no_feature` | Remove $L_{\text{feature}}$ ($\beta = 0$) | Moderate OOD drop — backbone loses SAM-aligned representations |
+| EXP-29: `ablation_no_boundary` | Remove $L_{\text{boundary}}$ ($\gamma = 0$) | Precision drops on thin crack edges, small OOD effect |
+| Future: `ablation_seghead_frozen` | Keep head frozen all training | Ceiling for backbone-only KD, no fine-tuning benefit |
 
 ### 11.3 SAM 3 as Teacher
 
