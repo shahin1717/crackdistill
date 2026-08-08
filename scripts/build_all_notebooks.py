@@ -736,42 +736,168 @@ This notebook evaluates all trained model checkpoints from `nb2`, `nb3`, and `nb
 * **Input Checkpoints**: `best.pt` files from all ablation and production runs.
 * **Outputs**: Master Markdown table with Mask mAP50, Mask mAP50-95, Box mAP50, and Precision/Recall."""),
 ] + get_self_contained_writefile_cells() + [
-    make_cell("code", """import pandas as pd
+    make_cell("code", """import glob
 from pathlib import Path
+import tempfile
+import yaml
+import pandas as pd
 from ultralytics import YOLO
 
 ablation_runs = [
-    ("Baseline (No KD Fine-tune)", "runs/crack_distill_baseline_finetune_instance_seg_yolo11n-seg/weights/best.pt"),
-    ("Full KD (Box Prompts)", "runs/crack_distill_full_kd_box_instance_seg_yolo11n-seg/weights/best.pt"),
-    ("Full KD (Box + Centroid)", "runs/crack_distill_full_kd_centroid_instance_seg_yolo11n-seg/weights/best.pt"),
-    ("Ablation 1: w/o Mask KL (nb5a)", "runs/crack_distill_ablation_no_mask_kd_instance_seg_yolo11n-seg/weights/best.pt"),
-    ("Ablation 2: w/o Feature MSE (nb5b)", "runs/crack_distill_ablation_no_feature_instance_seg_yolo11n-seg/weights/best.pt"),
-    ("Ablation 3: w/o Boundary BCE (nb5c)", "runs/crack_distill_ablation_no_boundary_instance_seg_yolo11n-seg/weights/best.pt"),
-    ("Ablation 4: Full SegHead Freeze (nb5d)", "runs/crack_distill_ablation_seghead_frozen_instance_seg_yolo11n-seg/weights/best.pt"),
+    ("Baseline (No KD Fine-tune)", ["baseline_finetune", "baseline", "nb2"], [
+        "runs/segment/crack_distill/baseline_finetune/weights/best.pt",
+        "runs/crack_distill_baseline_finetune_instance_seg_yolo11n-seg/weights/best.pt",
+        "runs/crack_distill_baseline_finetune_instance_seg_yolov8n-seg/weights/best.pt",
+    ]),
+    ("Full KD (Box Prompts)", ["full_kd_box", "full_kd_prompts", "full_kd"], [
+        "runs/segment/crack_distill/full_kd_box/weights/best.pt",
+        "runs/crack_distill_full_kd_box_instance_seg_yolo11n-seg/weights/best.pt",
+        "runs/crack_distill_full_kd_instance_seg_yolov8n-seg/weights/best.pt",
+    ]),
+    ("Full KD (Box + Centroid)", ["full_kd_centroid", "centroid"], [
+        "runs/segment/crack_distill/full_kd_centroid/weights/best.pt",
+        "runs/crack_distill_full_kd_centroid_instance_seg_yolo11n-seg/weights/best.pt",
+        "runs/crack_distill_full_kd_centroid_instance_seg_yolov8n-seg/weights/best.pt",
+    ]),
+    ("Ablation 1: w/o Mask KL (nb5a)", ["ablation_no_mask_kd", "no_mask_kd", "nb5a"], [
+        "runs/segment/crack_distill/ablation_no_mask_kd/weights/best.pt",
+        "runs/crack_distill_ablation_no_mask_kd_instance_seg_yolo11n-seg/weights/best.pt",
+        "runs/crack_distill_ablation_no_mask_kd_instance_seg_yolov8n-seg/weights/best.pt",
+    ]),
+    ("Ablation 2: w/o Feature MSE (nb5b)", ["ablation_no_feature", "no_feature", "nb5b"], [
+        "runs/segment/crack_distill/ablation_no_feature/weights/best.pt",
+        "runs/crack_distill_ablation_no_feature_instance_seg_yolo11n-seg/weights/best.pt",
+        "runs/crack_distill_ablation_no_feature_instance_seg_yolov8n-seg/weights/best.pt",
+    ]),
+    ("Ablation 3: w/o Boundary BCE (nb5c)", ["ablation_no_boundary", "no_boundary", "nb5c"], [
+        "runs/segment/crack_distill/ablation_no_boundary/weights/best.pt",
+        "runs/crack_distill_ablation_no_boundary_instance_seg_yolo11n-seg/weights/best.pt",
+        "runs/crack_distill_ablation_no_boundary_instance_seg_yolov8n-seg/weights/best.pt",
+    ]),
+    ("Ablation 4: Full SegHead Freeze (nb5d)", ["ablation_seghead_frozen", "seghead_frozen", "nb5d"], [
+        "runs/segment/crack_distill/ablation_seghead_frozen/weights/best.pt",
+        "runs/crack_distill_ablation_seghead_frozen_instance_seg_yolo11n-seg/weights/best.pt",
+        "runs/crack_distill_ablation_seghead_frozen_instance_seg_yolov8n-seg/weights/best.pt",
+    ]),
 ]
 
-data_yaml = "data/datasets/crack500_yolo/dataset.yaml"
+def find_dataset_yaml():
+    candidates = [
+        "data/datasets/crack500_yolo/dataset.yaml",
+        "data/datasets/combined_yolo/dataset.yaml",
+        "/kaggle/working/data/datasets/crack500_yolo/dataset.yaml",
+        "/kaggle/working/data/datasets/combined_yolo/dataset.yaml",
+    ]
+    for cand in candidates:
+        if Path(cand).exists():
+            return cand
+    search_dirs = [Path("data"), Path("/kaggle/input"), Path("/kaggle/working")]
+    for d in search_dirs:
+        if d.exists():
+            matches = list(d.glob("**/dataset.yaml"))
+            if matches:
+                return str(matches[0])
+    return "data/datasets/crack500_yolo/dataset.yaml"
+
+def prepare_dataset_yaml(raw_yaml_path):
+    yaml_path = Path(raw_yaml_path).resolve()
+    dataset_dir = yaml_path.parent
+    
+    with open(yaml_path, "r") as f:
+        data = yaml.safe_load(f)
+        
+    val_rel = data.get("val", "images/val")
+    if not (dataset_dir / val_rel).exists():
+        matches = list(dataset_dir.glob("**/images/val")) or list(dataset_dir.glob("**/val"))
+        if matches:
+            real_val_path = matches[0]
+            if real_val_path.name == "val" and real_val_path.parent.name == "images":
+                dataset_dir = real_val_path.parent.parent
+            else:
+                dataset_dir = real_val_path.parent
+                
+    data["path"] = str(dataset_dir)
+    
+    runtime_yaml = Path(tempfile.gettempdir()) / "runtime_dataset.yaml"
+    with open(runtime_yaml, "w") as f:
+        yaml.dump(data, f)
+        
+    return str(runtime_yaml)
+
+def find_checkpoint(name, keywords, candidates):
+    for cand in candidates:
+        if Path(cand).exists():
+            return cand
+        abs_cand = Path("/kaggle/working") / cand
+        if abs_cand.exists():
+            return str(abs_cand)
+
+    search_dirs = [Path("runs"), Path("/kaggle/working/runs"), Path("/kaggle/input"), Path("checkpoints")]
+    all_pt_files = []
+    for d in search_dirs:
+        if d.exists():
+            all_pt_files.extend(list(d.glob("**/*.pt")))
+
+    for pt in all_pt_files:
+        pt_str = str(pt).lower()
+        if "best.pt" in pt_str and any(kw.lower() in pt_str for kw in keywords):
+            return str(pt)
+
+    for pt in all_pt_files:
+        pt_str = str(pt).lower()
+        if any(kw.lower() in pt_str for kw in keywords):
+            return str(pt)
+
+    return None
+
+raw_data_yaml = find_dataset_yaml()
+data_yaml = prepare_dataset_yaml(raw_data_yaml)
+print(f"📁 Dataset YAML resolved & patched to: {data_yaml}")
+
 results = []
-for name, ckpt in ablation_runs:
-    ckpt_path = Path(ckpt)
-    if ckpt_path.exists():
-        m = YOLO(str(ckpt_path))
-        res = m.val(data=data_yaml, split="val")
-        results.append({
-            "Ablation / Model Variant": name,
-            "Mask mAP50": res.seg.map50,
-            "Mask mAP50-95": res.seg.map,
-            "Box mAP50": res.box.map50,
-            "Box mAP50-95": res.box.map,
-        })
+missing = []
+
+for name, keywords, ckpt_candidates in ablation_runs:
+    found_ckpt = find_checkpoint(name, keywords, ckpt_candidates)
+    if found_ckpt:
+        print(f"✅ Found checkpoint for '{name}': {found_ckpt}")
+        try:
+            m = YOLO(found_ckpt)
+            res = m.val(data=data_yaml, split="val")
+            results.append({
+                "Ablation / Model Variant": name,
+                "Mask mAP50": getattr(res.seg, "map50", 0.0),
+                "Mask mAP50-95": getattr(res.seg, "map", 0.0),
+                "Box mAP50": getattr(res.box, "map50", 0.0),
+                "Box mAP50-95": getattr(res.box, "map", 0.0),
+                "Resolved Path": found_ckpt,
+            })
+        except Exception as e:
+            print(f"⚠️ Error evaluating '{name}' ({found_ckpt}): {e}")
+            missing.append(name)
     else:
-        print(f"Skipping {name}: checkpoint {ckpt} not found.")
+        print(f"Skipping {name}: checkpoint not found in candidates: {ckpt_candidates}")
+        missing.append(name)
 
 df = pd.DataFrame(results)
 print("\\n" + "="*70)
 print("🔬 MASTER ABLATION STUDY RESULTS SUMMARY")
 print("="*70)
-print(df.to_string(index=False))
+if not df.empty:
+    print(df.to_string(index=False))
+else:
+    print("No finished ablation checkpoints found in runs/ or /kaggle/input/.")
+
+if missing:
+    print("\\n" + "-"*70)
+    print("💡 KAGGLE / LOCAL CHECKPOINT ATTACHMENT GUIDE:")
+    print("-"*70)
+    print(f"Missing variants ({len(missing)}): {', '.join(missing)}")
+    print("To resolve missing checkpoints on Kaggle:\\n"
+          "  1. Go to right sidebar in Kaggle Notebook editor.\\n"
+          "  2. Click '+ Add Data' -> 'Notebook Output Files'.\\n"
+          "  3. Search and attach your finished runs (e.g. nb2, nb3, nb5a, nb5b, nb5c, nb5d).\\n"
+          "  4. The automatic finder will scan /kaggle/input and evaluate them instantly!")
 """)
 ]
 

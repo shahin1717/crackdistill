@@ -416,35 +416,96 @@ This notebook is 100% self-contained for Kaggle execution. It runs full loss com
 !python scripts/run_experiments.py --exp ablation_no_boundary --cfg configs/config.yaml
 """),
     make_cell("markdown", "## 📈 Master Results Summary Table"),
-    make_cell("code", """import pandas as pd
+        make_cell("code", """import glob
 from pathlib import Path
+import pandas as pd
 from ultralytics import YOLO
 
 ablation_runs = [
-    ("Baseline (Fine-tune)", "runs/crack_distill_baseline_finetune_instance_seg_yolo11n-seg/weights/best.pt"),
-    ("Full KD (Box)", "runs/crack_distill_full_kd_box_instance_seg_yolo11n-seg/weights/best.pt"),
-    ("Full KD (Box+Centroid)", "runs/crack_distill_full_kd_centroid_instance_seg_yolo11n-seg/weights/best.pt"),
-    ("Ablation: w/o Mask KD", "runs/crack_distill_ablation_no_mask_kd_instance_seg_yolo11n-seg/weights/best.pt"),
-    ("Ablation: w/o Feature KD", "runs/crack_distill_ablation_no_feature_instance_seg_yolo11n-seg/weights/best.pt"),
-    ("Ablation: w/o Boundary KD", "runs/crack_distill_ablation_no_boundary_instance_seg_yolo11n-seg/weights/best.pt"),
+    ("Baseline (Fine-tune)", ["baseline_finetune", "baseline", "nb2"], [
+        "runs/segment/crack_distill/baseline_finetune/weights/best.pt",
+        "runs/crack_distill_baseline_finetune_instance_seg_yolo11n-seg/weights/best.pt",
+        "runs/crack_distill_baseline_finetune_instance_seg_yolov8n-seg/weights/best.pt",
+    ]),
+    ("Full KD (Box)", ["full_kd_box", "full_kd_prompts", "full_kd"], [
+        "runs/segment/crack_distill/full_kd_box/weights/best.pt",
+        "runs/crack_distill_full_kd_box_instance_seg_yolo11n-seg/weights/best.pt",
+        "runs/crack_distill_full_kd_instance_seg_yolov8n-seg/weights/best.pt",
+    ]),
+    ("Full KD (Box+Centroid)", ["full_kd_centroid", "centroid"], [
+        "runs/segment/crack_distill/full_kd_centroid/weights/best.pt",
+        "runs/crack_distill_full_kd_centroid_instance_seg_yolo11n-seg/weights/best.pt",
+        "runs/crack_distill_full_kd_centroid_instance_seg_yolov8n-seg/weights/best.pt",
+    ]),
+    ("Ablation: w/o Mask KD", ["ablation_no_mask_kd", "no_mask_kd", "nb5a"], [
+        "runs/segment/crack_distill/ablation_no_mask_kd/weights/best.pt",
+        "runs/crack_distill_ablation_no_mask_kd_instance_seg_yolo11n-seg/weights/best.pt",
+        "runs/crack_distill_ablation_no_mask_kd_instance_seg_yolov8n-seg/weights/best.pt",
+    ]),
+    ("Ablation: w/o Feature KD", ["ablation_no_feature", "no_feature", "nb5b"], [
+        "runs/segment/crack_distill/ablation_no_feature/weights/best.pt",
+        "runs/crack_distill_ablation_no_feature_instance_seg_yolo11n-seg/weights/best.pt",
+        "runs/crack_distill_ablation_no_feature_instance_seg_yolov8n-seg/weights/best.pt",
+    ]),
+    ("Ablation: w/o Boundary KD", ["ablation_no_boundary", "no_boundary", "nb5c"], [
+        "runs/segment/crack_distill/ablation_no_boundary/weights/best.pt",
+        "runs/crack_distill_ablation_no_boundary_instance_seg_yolo11n-seg/weights/best.pt",
+        "runs/crack_distill_ablation_no_boundary_instance_seg_yolov8n-seg/weights/best.pt",
+    ]),
 ]
 
-data_yaml = "data/datasets/crack500_yolo/dataset.yaml"
+def prepare_dataset_yaml(raw_yaml_path):
+    yaml_path = Path(raw_yaml_path).resolve()
+    dataset_dir = yaml_path.parent
+    
+    with open(yaml_path, "r") as f:
+        data = yaml.safe_load(f)
+        
+    val_rel = data.get("val", "images/val")
+    if not (dataset_dir / val_rel).exists():
+        matches = list(dataset_dir.glob("**/images/val")) or list(dataset_dir.glob("**/val"))
+        if matches:
+            real_val_path = matches[0]
+            if real_val_path.name == "val" and real_val_path.parent.name == "images":
+                dataset_dir = real_val_path.parent.parent
+            else:
+                dataset_dir = real_val_path.parent
+                
+    data["path"] = str(dataset_dir)
+    
+    runtime_yaml = Path(tempfile.gettempdir()) / "runtime_dataset.yaml"
+    with open(runtime_yaml, "w") as f:
+        yaml.dump(data, f)
+        
+    return str(runtime_yaml)
+
+raw_data_yaml = find_dataset_yaml()
+data_yaml = prepare_dataset_yaml(raw_data_yaml)
+print(f"📁 Dataset YAML resolved & patched to: {data_yaml}")
+
 results = []
-for name, ckpt in ablation_runs:
-    if Path(ckpt).exists() and Path(data_yaml).exists():
-        m = YOLO(ckpt)
-        res = m.val(data=data_yaml, split="val")
-        results.append({
-            "Configuration": name,
-            "Cropped mAP50-seg": res.seg.map50,
-            "Cropped mAP50-95-seg": res.seg.map,
-            "Cropped mAP50-box": res.box.map50,
-        })
+for name, keywords, ckpt_candidates in ablation_runs:
+    found_ckpt = find_checkpoint(name, keywords, ckpt_candidates)
+    if found_ckpt:
+        try:
+            m = YOLO(found_ckpt)
+            res = m.val(data=data_yaml, split="val")
+            results.append({
+                "Configuration": name,
+                "Cropped mAP50-seg": getattr(res.seg, "map50", 0.0),
+                "Cropped mAP50-95-seg": getattr(res.seg, "map", 0.0),
+                "Cropped mAP50-box": getattr(res.box, "map50", 0.0),
+                "Resolved Path": found_ckpt,
+            })
+        except Exception as e:
+            print(f"⚠️ Error evaluating {name} ({found_ckpt}): {e}")
 
 df = pd.DataFrame(results)
 print("\\n=== ABLATION STUDY RESULTS ===")
-print(df.to_string(index=False))
+if not df.empty:
+    print(df.to_string(index=False))
+else:
+    print("No finished ablation checkpoints found.")
 """)
 ]
 
