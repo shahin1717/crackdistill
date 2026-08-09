@@ -260,6 +260,26 @@ class KDSegmentationTrainer(SegmentationTrainer):
         self._hook_handles = []
 
         logit_files = list(self.logits_dir.glob("*.npy"))
+        if len(logit_files) == 0:
+            for candidate in [Path("/tmp") / self.logits_dir.name, Path("/tmp/teacher_logits_box"), Path("/tmp/teacher_logits")]:
+                if candidate.exists():
+                    c_files = list(candidate.glob("*.npy"))
+                    if len(c_files) > 0:
+                        print(f"[KD] Found {len(c_files)} logit files in fallback '{candidate}'. Redirecting logits_dir.")
+                        self.logits_dir = candidate
+                        logit_files = c_files
+                        try:
+                            p_local = Path(str(logits_dir))
+                            if not p_local.exists() or (p_local.is_dir() and not list(p_local.glob("*.npy"))):
+                                if os.path.lexists(p_local):
+                                    os.unlink(p_local) if os.path.islink(p_local) else shutil.rmtree(p_local)
+                                p_local.parent.mkdir(parents=True, exist_ok=True)
+                                os.symlink(candidate, p_local)
+                                print(f"[KD] Created symlink: {p_local} -> {candidate}")
+                        except Exception as sym_err:
+                            print(f"[KD Warning] Could not symlink fallback: {sym_err}")
+                        break
+
         print(f"[KD] logits_dir : {self.logits_dir}")
         print(f"[KD] logit files: {len(logit_files)}")
         print(f"[KD] temperature: {self.temperature}")

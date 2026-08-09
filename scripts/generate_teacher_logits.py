@@ -88,9 +88,23 @@ def main():
     else:
         logits_dir = ROOT / "data/teacher_logits"
         
+    orig_logits_dir = logits_dir
     # On Kaggle, redirect to /tmp/ to avoid exceeding 20GB disk limit
     if "/kaggle/" in str(logits_dir):
         logits_dir = Path("/tmp") / logits_dir.name
+        logits_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            if os.path.lexists(orig_logits_dir):
+                if os.path.islink(orig_logits_dir):
+                    os.unlink(orig_logits_dir)
+                elif orig_logits_dir.is_dir() and not list(orig_logits_dir.glob("*.npy")):
+                    orig_logits_dir.rmdir()
+            if not orig_logits_dir.exists():
+                orig_logits_dir.parent.mkdir(parents=True, exist_ok=True)
+                os.symlink(logits_dir, orig_logits_dir)
+                print(f"[Logits] Created symlink: {orig_logits_dir} -> {logits_dir}")
+        except Exception as e:
+            print(f"[Logits Warning] Could not symlink {orig_logits_dir} -> {logits_dir}: {e}")
         
     logits_dir.mkdir(parents=True, exist_ok=True)
 

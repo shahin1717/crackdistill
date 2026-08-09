@@ -728,11 +728,50 @@ with open(out_dir / "nb5d_ablation_seghead_frozen.ipynb", "w") as f:
 print("Created nb5d_ablation_seghead_frozen.ipynb")
 
 # ==============================================================================
+# NOTEBOOK 5f: nb5f_ablation_mask_kd_only.ipynb
+# ==============================================================================
+nb5f_cells = [
+    make_cell("markdown", """# 🔬 Notebook 5f: Ablation 5 — Mask KL Only (Task + Mask KL, No Feature MSE, No Boundary BCE)
+This notebook runs **Ablation 5**: Knowledge Distillation on Crack500 with **Mask KL Loss ONLY** ($\alpha = 1.8658$, $\beta = 0$, $\gamma = 0$).
+* **Goal**: Test the optimal 1-loss KD strategy identified from nb5b/nb5c findings.
+* **Input Dataset**: Crack500 + pre-computed SAM 2 teacher logits."""),
+] + get_self_contained_writefile_cells() + [
+    crack500_dataset_setup_cell,
+    crack500_logits_generation_cell,
+    make_cell("code", """# Run Ablation 5 (Mask KL Only)
+import sys
+sys.path.insert(0, ".")
+from distillation.kd_trainer import KDSegmentationTrainer
+from utils.config_loader import load_config, override_config
+
+cfg = load_config("configs/config.yaml")
+cfg = override_config(cfg, {
+    "project.name": "crack_distill",
+    "project.experiment": "ablation_mask_kd_only",
+    "data.datasets": [{"name": "crack500", "path": "data/datasets/crack500_yolo", "format": "yolo"}],
+    "distillation.enabled": True,
+    "distillation.losses.mask_kd.enabled": True,
+    "distillation.losses.feature.enabled": False,
+    "distillation.losses.boundary.enabled": False,
+    "teacher.logits_dir": "data/teacher_logits_box/"
+})
+
+trainer = KDSegmentationTrainer(cfg)
+trainer.train()
+print("✓ Ablation 5 (Mask KL Only) completed!")
+""")
+]
+
+with open(out_dir / "nb5f_ablation_mask_kd_only.ipynb", "w") as f:
+    json.dump(make_nb(nb5f_cells), f, indent=1, ensure_ascii=False)
+print("Created nb5f_ablation_mask_kd_only.ipynb")
+
+# ==============================================================================
 # NOTEBOOK 5e: nb5e_ablation_results_summary.ipynb
 # ==============================================================================
 nb5e_cells = [
     make_cell("markdown", """# 📊 Notebook 5e: Master Ablation Study & Results Summary Aggregation
-This notebook evaluates all trained model checkpoints from `nb2`, `nb3`, and `nb5a-d` to generate the master academic comparison table.
+This notebook evaluates all trained model checkpoints from `nb2`, `nb3`, and `nb5a-f` to generate the master academic comparison table.
 * **Input Checkpoints**: `best.pt` files from all ablation and production runs.
 * **Outputs**: Master Markdown table with Mask mAP50, Mask mAP50-95, Box mAP50, and Precision/Recall."""),
 ] + get_self_contained_writefile_cells() + [
@@ -778,6 +817,11 @@ ablation_runs = [
         "runs/segment/crack_distill/ablation_seghead_frozen/weights/best.pt",
         "runs/crack_distill_ablation_seghead_frozen_instance_seg_yolo11n-seg/weights/best.pt",
         "runs/crack_distill_ablation_seghead_frozen_instance_seg_yolov8n-seg/weights/best.pt",
+    ]),
+    ("Ablation 5: Mask KL Only (nb5f)", ["ablation_mask_kd_only", "mask_kd_only", "nb5f"], [
+        "runs/segment/crack_distill/ablation_mask_kd_only/weights/best.pt",
+        "runs/crack_distill_ablation_mask_kd_only_instance_seg_yolo11n-seg/weights/best.pt",
+        "runs/crack_distill_ablation_mask_kd_only_instance_seg_yolov8n-seg/weights/best.pt",
     ]),
 ]
 
@@ -831,22 +875,27 @@ def find_checkpoint(name, keywords, candidates):
         abs_cand = Path("/kaggle/working") / cand
         if abs_cand.exists():
             return str(abs_cand)
-
-    search_dirs = [Path("runs"), Path("/kaggle/working/runs"), Path("/kaggle/input"), Path("checkpoints")]
-    all_pt_files = []
+            
+    # Search /kaggle/input and /kaggle/working/runs for precise matching best.pt files
+    search_dirs = [Path("/kaggle/input"), Path("/kaggle/working/runs"), Path("runs"), Path("checkpoints")]
     for d in search_dirs:
         if d.exists():
-            all_pt_files.extend(list(d.glob("**/*.pt")))
-
-    for pt in all_pt_files:
-        pt_str = str(pt).lower()
-        if "best.pt" in pt_str and any(kw.lower() in pt_str for kw in keywords):
-            return str(pt)
-
-    for pt in all_pt_files:
-        pt_str = str(pt).lower()
-        if any(kw.lower() in pt_str for kw in keywords):
-            return str(pt)
+            # Check for candidate basenames in search dir
+            for cand in candidates:
+                cand_name = Path(cand).name
+                cand_parent = Path(cand).parent.name
+                matches = list(d.glob(f"**/{cand_parent}/{cand_name}"))
+                if matches:
+                    return str(matches[0])
+                    
+    # Strict matching: require exact experiment keyword in directory name + best.pt
+    for d in search_dirs:
+        if d.exists():
+            for pt in d.glob("**/*.pt"):
+                pt_str = str(pt).lower()
+                # Must end with best.pt and contain primary keyword as a directory path component
+                if pt.name == "best.pt" and keywords and any(f"/{kw.lower()}/" in pt_str or f"_{kw.lower()}_" in pt_str for kw in keywords[:1]):
+                    return str(pt)
 
     return None
 
