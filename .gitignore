@@ -59,6 +59,7 @@ scratch/
 Thumbs.db
 .idea/
 .agents/
+.claude/
 .vscode/*
 !.vscode/settings.json
 !.vscode/tasks.json
