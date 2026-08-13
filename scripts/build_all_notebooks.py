@@ -782,66 +782,78 @@ import yaml
 import pandas as pd
 from ultralytics import YOLO
 
-ablation_runs = [
-    ("Baseline (No KD Fine-tune)", ["baseline_finetune", "baseline", "nb2"], [
+ablation_runs_crack500 = [
+    ("Baseline (No KD Fine-tune)", [
+        "runs/crack500_baseline/weights/best.pt",
         "runs/segment/crack_distill/baseline_finetune/weights/best.pt",
         "runs/crack_distill_baseline_finetune_instance_seg_yolo11n-seg/weights/best.pt",
-        "runs/crack_distill_baseline_finetune_instance_seg_yolov8n-seg/weights/best.pt",
     ]),
-    ("Full KD (Box Prompts)", ["full_kd_box", "full_kd_prompts", "full_kd"], [
+    ("Full KD (Box Prompts)", [
+        "runs/nb2_full_kd_box/weights/best.pt",
         "runs/segment/crack_distill/full_kd_box/weights/best.pt",
         "runs/crack_distill_full_kd_box_instance_seg_yolo11n-seg/weights/best.pt",
-        "runs/crack_distill_full_kd_instance_seg_yolov8n-seg/weights/best.pt",
     ]),
-    ("Full KD (Box + Centroid)", ["full_kd_centroid", "centroid"], [
+    ("Full KD (Box + Centroid)", [
+        "runs/nb2_full_kd_centroid/weights/best.pt",
         "runs/segment/crack_distill/full_kd_centroid/weights/best.pt",
         "runs/crack_distill_full_kd_centroid_instance_seg_yolo11n-seg/weights/best.pt",
-        "runs/crack_distill_full_kd_centroid_instance_seg_yolov8n-seg/weights/best.pt",
     ]),
-    ("Ablation 1: w/o Mask KL (nb5a)", ["ablation_no_mask_kd", "no_mask_kd", "nb5a"], [
+    ("Ablation 1: w/o Mask KL (nb5a)", [
+        "runs/nb5a_ablation_no_mask_kd/weights/best.pt",
         "runs/segment/crack_distill/ablation_no_mask_kd/weights/best.pt",
         "runs/crack_distill_ablation_no_mask_kd_instance_seg_yolo11n-seg/weights/best.pt",
-        "runs/crack_distill_ablation_no_mask_kd_instance_seg_yolov8n-seg/weights/best.pt",
     ]),
-    ("Ablation 2: w/o Feature MSE (nb5b)", ["ablation_no_feature", "no_feature", "nb5b"], [
+    ("Ablation 2: w/o Feature MSE (nb5b)", [
+        "runs/nb5b_ablation_no_feature/weights/best.pt",
         "runs/segment/crack_distill/ablation_no_feature/weights/best.pt",
         "runs/crack_distill_ablation_no_feature_instance_seg_yolo11n-seg/weights/best.pt",
-        "runs/crack_distill_ablation_no_feature_instance_seg_yolov8n-seg/weights/best.pt",
     ]),
-    ("Ablation 3: w/o Boundary BCE (nb5c)", ["ablation_no_boundary", "no_boundary", "nb5c"], [
+    ("Ablation 3: w/o Boundary BCE (nb5c)", [
+        "runs/nb5c_ablation_no_boundary/weights/best.pt",
         "runs/segment/crack_distill/ablation_no_boundary/weights/best.pt",
         "runs/crack_distill_ablation_no_boundary_instance_seg_yolo11n-seg/weights/best.pt",
-        "runs/crack_distill_ablation_no_boundary_instance_seg_yolov8n-seg/weights/best.pt",
     ]),
-    ("Ablation 4: Full SegHead Freeze (nb5d)", ["ablation_seghead_frozen", "seghead_frozen", "nb5d"], [
-        "runs/segment/crack_distill/ablation_seghead_frozen/weights/best.pt",
-        "runs/crack_distill_ablation_seghead_frozen_instance_seg_yolo11n-seg/weights/best.pt",
-        "runs/crack_distill_ablation_seghead_frozen_instance_seg_yolov8n-seg/weights/best.pt",
-    ]),
-    ("Ablation 5: Mask KL Only (nb5f)", ["ablation_mask_kd_only", "mask_kd_only", "nb5f"], [
+    ("Ablation 5: Mask KL Only (nb5f)", [
+        "runs/nb5f_ablation_mask_kd_only/weights/best.pt",
         "runs/segment/crack_distill/ablation_mask_kd_only/weights/best.pt",
         "runs/crack_distill_ablation_mask_kd_only_instance_seg_yolo11n-seg/weights/best.pt",
-        "runs/crack_distill_ablation_mask_kd_only_instance_seg_yolov8n-seg/weights/best.pt",
     ]),
 ]
 
-def find_dataset_yaml():
+deepcrack_ablation_runs = [
+    ("Ablation 4: Full SegHead Freeze (nb5d)", [
+        "runs/nb5d_ablation_seghead_frozen/weights/best.pt",
+        "runs/segment/crack_distill/ablation_seghead_frozen/weights/best.pt",
+        "runs/crack_distill_ablation_seghead_frozen_instance_seg_yolo11n-seg/weights/best.pt",
+    ]),
+]
+
+def find_dataset_yaml(dset_name="crack500_yolo"):
     candidates = [
-        "data/datasets/crack500_yolo/dataset.yaml",
-        "data/datasets/combined_yolo/dataset.yaml",
-        "/kaggle/working/data/datasets/crack500_yolo/dataset.yaml",
-        "/kaggle/working/data/datasets/combined_yolo/dataset.yaml",
+        f"data/datasets/{dset_name}/dataset.yaml",
+        f"/kaggle/working/data/datasets/{dset_name}/dataset.yaml",
     ]
     for cand in candidates:
-        if Path(cand).exists():
-            return cand
+        cand_p = Path(cand)
+        if cand_p.exists():
+            parent = cand_p.parent
+            if (parent / "images" / "val").exists() or (parent / "val").exists():
+                return str(cand_p)
+
     search_dirs = [Path("data"), Path("/kaggle/input"), Path("/kaggle/working")]
     for d in search_dirs:
         if d.exists():
-            matches = list(d.glob("**/dataset.yaml"))
-            if matches:
-                return str(matches[0])
-    return "data/datasets/crack500_yolo/dataset.yaml"
+            matches = list(d.glob(f"**/{dset_name}/**/dataset.yaml")) + list(d.glob(f"**/{dset_name}/dataset.yaml")) + list(d.glob("**/dataset.yaml"))
+            for m in matches:
+                parent = m.parent
+                if (parent / "images" / "val").exists() or (parent / "val").exists():
+                    return str(m)
+
+    for cand in candidates:
+        if Path(cand).exists():
+            return cand
+
+    return f"data/datasets/{dset_name}/dataset.yaml"
 
 def prepare_dataset_yaml(raw_yaml_path):
     yaml_path = Path(raw_yaml_path).resolve()
@@ -860,61 +872,67 @@ def prepare_dataset_yaml(raw_yaml_path):
             else:
                 dataset_dir = real_val_path.parent
                 
-    data["path"] = str(dataset_dir)
+    data["path"] = str(dataset_dir.resolve())
     
-    runtime_yaml = Path(tempfile.gettempdir()) / "runtime_dataset.yaml"
+    runtime_yaml = Path(tempfile.gettempdir()) / f"runtime_{yaml_path.parent.name}_dataset.yaml"
     with open(runtime_yaml, "w") as f:
         yaml.dump(data, f)
         
     return str(runtime_yaml)
 
-def find_checkpoint(name, keywords, candidates):
+def find_checkpoint(name, candidates):
+    # 1. Strict candidate checking — explicit exact path checks
     for cand in candidates:
-        if Path(cand).exists():
-            return cand
+        p = Path(cand)
+        if p.exists():
+            return str(p.resolve())
         abs_cand = Path("/kaggle/working") / cand
         if abs_cand.exists():
-            return str(abs_cand)
+            return str(abs_cand.resolve())
             
-    # Search /kaggle/input and /kaggle/working/runs for precise matching best.pt files
+    # 2. Scoped directory search matching exact experiment folder name + weight filename
     search_dirs = [Path("/kaggle/input"), Path("/kaggle/working/runs"), Path("runs"), Path("checkpoints")]
-    for d in search_dirs:
-        if d.exists():
-            # Check for candidate basenames in search dir
-            for cand in candidates:
-                cand_name = Path(cand).name
-                cand_parent = Path(cand).parent.name
-                matches = list(d.glob(f"**/{cand_parent}/{cand_name}"))
+    for cand in candidates:
+        cand_p = Path(cand)
+        if len(cand_p.parts) >= 3 and cand_p.parts[-2] == "weights":
+            exp_folder = cand_p.parts[-3]
+        elif len(cand_p.parts) >= 2:
+            exp_folder = cand_p.parent.name
+        else:
+            exp_folder = None
+            
+        filename = cand_p.name
+        
+        for d in search_dirs:
+            if d.exists():
+                if exp_folder:
+                    matches = list(d.glob(f"**/{exp_folder}/**/{filename}"))
+                else:
+                    matches = list(d.glob(f"**/{filename}"))
                 if matches:
-                    return str(matches[0])
-                    
-    # Strict matching: require exact experiment keyword in directory name + best.pt
-    for d in search_dirs:
-        if d.exists():
-            for pt in d.glob("**/*.pt"):
-                pt_str = str(pt).lower()
-                # Must end with best.pt and contain primary keyword as a directory path component
-                if pt.name == "best.pt" and keywords and any(f"/{kw.lower()}/" in pt_str or f"_{kw.lower()}_" in pt_str for kw in keywords[:1]):
-                    return str(pt)
+                    return str(matches[0].resolve())
 
+    print(f"⚠️ [STRICT RESOLVER] Checkpoint for '{name}' NOT found in explicit candidates or scoped search.")
     return None
 
-raw_data_yaml = find_dataset_yaml()
-data_yaml = prepare_dataset_yaml(raw_data_yaml)
-print(f"📁 Dataset YAML resolved & patched to: {data_yaml}")
+crack500_yaml = prepare_dataset_yaml(find_dataset_yaml("crack500_yolo"))
+deepcrack_yaml = prepare_dataset_yaml(find_dataset_yaml("deepcrack_yolo"))
+print(f"📁 Crack500 Dataset YAML resolved to: {crack500_yaml}")
+print(f"📁 DeepCrack Dataset YAML resolved to: {deepcrack_yaml}")
 
-results = []
-missing = []
+results_c500 = []
+missing_c500 = []
 
-for name, keywords, ckpt_candidates in ablation_runs:
-    found_ckpt = find_checkpoint(name, keywords, ckpt_candidates)
+for name, ckpt_candidates in ablation_runs_crack500:
+    found_ckpt = find_checkpoint(name, ckpt_candidates)
     if found_ckpt:
-        print(f"✅ Found checkpoint for '{name}': {found_ckpt}")
+        print(f"✅ Found Crack500 checkpoint for '{name}': {found_ckpt}")
         try:
             m = YOLO(found_ckpt)
-            res = m.val(data=data_yaml, split="val")
-            results.append({
+            res = m.val(data=crack500_yaml, split="val")
+            results_c500.append({
                 "Ablation / Model Variant": name,
+                "Evaluation Split": "Crack500 Val (348 imgs)",
                 "Mask mAP50": getattr(res.seg, "map50", 0.0),
                 "Mask mAP50-95": getattr(res.seg, "map", 0.0),
                 "Box mAP50": getattr(res.box, "map50", 0.0),
@@ -923,35 +941,229 @@ for name, keywords, ckpt_candidates in ablation_runs:
             })
         except Exception as e:
             print(f"⚠️ Error evaluating '{name}' ({found_ckpt}): {e}")
-            missing.append(name)
+            missing_c500.append(name)
     else:
-        print(f"Skipping {name}: checkpoint not found in candidates: {ckpt_candidates}")
-        missing.append(name)
+        missing_c500.append(name)
 
-df = pd.DataFrame(results)
+results_deep = []
+for name, ckpt_candidates in deepcrack_ablation_runs:
+    found_ckpt = find_checkpoint(name, ckpt_candidates)
+    if found_ckpt:
+        print(f"✅ Found DeepCrack checkpoint for '{name}': {found_ckpt}")
+        try:
+            m = YOLO(found_ckpt)
+            res = m.val(data=deepcrack_yaml, split="val")
+            results_deep.append({
+                "Ablation / Model Variant": name,
+                "Evaluation Split": "DeepCrack Val (60 imgs)",
+                "Mask mAP50": getattr(res.seg, "map50", 0.0),
+                "Mask mAP50-95": getattr(res.seg, "map", 0.0),
+                "Box mAP50": getattr(res.box, "map50", 0.0),
+                "Box mAP50-95": getattr(res.box, "map", 0.0),
+                "Resolved Path": found_ckpt,
+            })
+        except Exception as e:
+            print(f"⚠️ Error evaluating '{name}' ({found_ckpt}): {e}")
+
+df_c500 = pd.DataFrame(results_c500)
+df_deep = pd.DataFrame(results_deep)
+
 print("\\n" + "="*70)
-print("🔬 MASTER ABLATION STUDY RESULTS SUMMARY")
+print("🔬 MASTER ABLATION STUDY SUMMARY (CRACK500 VAL SET)")
 print("="*70)
-if not df.empty:
-    print(df.to_string(index=False))
+if not df_c500.empty:
+    print(df_c500.to_string(index=False))
 else:
-    print("No finished ablation checkpoints found in runs/ or /kaggle/input/.")
+    print("No finished Crack500 ablation checkpoints found.")
 
-if missing:
+if not df_deep.empty:
+    print("\\n" + "="*70)
+    print("🔬 DEEPCRACK SEGHEAD FREEZE ABLATION SUMMARY (DEEPCRACK VAL SET)")
+    print("="*70)
+    print(df_deep.to_string(index=False))
+
+if missing_c500:
     print("\\n" + "-"*70)
     print("💡 KAGGLE / LOCAL CHECKPOINT ATTACHMENT GUIDE:")
     print("-"*70)
-    print(f"Missing variants ({len(missing)}): {', '.join(missing)}")
-    print("To resolve missing checkpoints on Kaggle:\\n"
-          "  1. Go to right sidebar in Kaggle Notebook editor.\\n"
-          "  2. Click '+ Add Data' -> 'Notebook Output Files'.\\n"
-          "  3. Search and attach your finished runs (e.g. nb2, nb3, nb5a, nb5b, nb5c, nb5d).\\n"
-          "  4. The automatic finder will scan /kaggle/input and evaluate them instantly!")
+    print(f"Missing Crack500 variants ({len(missing_c500)}): {', '.join(missing_c500)}")
 """)
 ]
 
 with open(out_dir / "nb5e_ablation_results_summary.ipynb", "w") as f:
     json.dump(make_nb(nb5e_cells), f, indent=1, ensure_ascii=False)
 print("Created nb5e_ablation_results_summary.ipynb")
+
+# ==============================================================================
+# NOTEBOOK 7: nb7_seed_reruns.ipynb
+# ==============================================================================
+nb7_cells = [
+    make_cell("markdown", """# 🧪 Notebook 7: Multi-Seed Verification Study (Seeds 42, 123, 456)
+This notebook executes **Multi-Seed Reruns** across the 5 core Crack500 ablation arms to obtain statistically robust `mean ± std` metrics for publication readiness.
+
+### 📌 Ablation Arms & Seeds Included:
+1. **Full KD** (`full_kd`): Seeds 123, 456 (plus baseline seed 42)
+2. **w/o Mask KL** (`no_mask_kd`): Seeds 123, 456 (plus baseline seed 42)
+3. **w/o Feature MSE** (`no_feature`): Seeds 123, 456 (plus baseline seed 42)
+4. **w/o Boundary BCE** (`no_boundary`): Seeds 123, 456 (plus baseline seed 42)
+5. **Mask KL Only** (`mask_kd_only`): Seeds 123, 456 (plus baseline seed 42)
+
+* **Verification Gate**: Every run explicitly verifies `[KD] logit files: N > 0` before starting training."""),
+] + get_self_contained_writefile_cells() + [
+    crack500_dataset_setup_cell,
+    crack500_logits_generation_cell,
+]
+
+# Generate training cells for 5 arms x 2 seeds (123, 456)
+arms_config = [
+    ("Full KD", "full_kd", True, True, True),
+    ("w/o Mask KL", "no_mask_kd", False, True, True),
+    ("w/o Feature MSE", "no_feature", True, False, True),
+    ("w/o Boundary BCE", "no_boundary", True, True, False),
+    ("Mask KL Only", "mask_kd_only", True, False, False),
+]
+
+for arm_label, arm_name, mask_on, feat_on, bound_on in arms_config:
+    for seed in [123, 456]:
+        train_code = f"""# ============================================================
+# RUN: {arm_label} (Seed {seed})
+# ============================================================
+import sys
+from pathlib import Path
+
+logits_dir = Path("data/teacher_logits_box")
+logits_count = len(list(logits_dir.glob("*.npy"))) if logits_dir.exists() else 0
+assert logits_count > 0, f"[KD FATAL ERROR] Found {{logits_count}} logit files! Cannot run KD for {arm_name}_s{seed}."
+
+sys.path.insert(0, ".")
+from distillation.kd_trainer import KDSegmentationTrainer
+from utils.config_loader import load_config, override_config
+
+print("🚀 Starting {arm_label} (Seed {seed})...")
+
+cfg = load_config("configs/config.yaml")
+cfg = override_config(cfg, {{
+    "project.name": "crack_distill",
+    "project.experiment": "ablation_{arm_name}_s{seed}",
+    "project.seed": {seed},
+    "data.datasets": [{{"name": "crack500", "path": "data/datasets/crack500_yolo", "format": "yolo"}}],
+    "distillation.enabled": True,
+    "distillation.losses.mask_kd.enabled": {mask_on},
+    "distillation.losses.feature.enabled": {feat_on},
+    "distillation.losses.boundary.enabled": {bound_on},
+    "teacher.logits_dir": "data/teacher_logits_box/"
+}})
+
+trainer = KDSegmentationTrainer(cfg)
+trainer.train()
+print("✓ {arm_label} (Seed {seed}) completed!")
+"""
+        nb7_cells.append(make_cell("code", train_code))
+
+# Multi-seed Aggregation Cell
+aggregation_code = """# ============================================================
+# MULTI-SEED STATISTICAL AGGREGATION SUMMARY (SEEDS 42, 123, 456)
+# ============================================================
+import numpy as np
+import pandas as pd
+from pathlib import Path
+from ultralytics import YOLO
+
+arms_eval = [
+    ("Full KD", "full_kd", ["runs/nb2_full_kd_box/weights/best.pt", "runs/segment/crack_distill/full_kd_box/weights/best.pt"]),
+    ("w/o Mask KL", "no_mask_kd", ["runs/nb5a_ablation_no_mask_kd/weights/best.pt", "runs/segment/crack_distill/ablation_no_mask_kd/weights/best.pt"]),
+    ("w/o Feature MSE", "no_feature", ["runs/nb5b_ablation_no_feature/weights/best.pt", "runs/segment/crack_distill/ablation_no_feature/weights/best.pt"]),
+    ("w/o Boundary BCE", "no_boundary", ["runs/nb5c_ablation_no_boundary/weights/best.pt", "runs/segment/crack_distill/ablation_no_boundary/weights/best.pt"]),
+    ("Mask KL Only", "mask_kd_only", ["runs/nb5f_ablation_mask_kd_only/weights/best.pt", "runs/segment/crack_distill/ablation_mask_kd_only/weights/best.pt"]),
+]
+
+seeds = [42, 123, 456]
+data_yaml = "data/datasets/crack500_yolo/dataset.yaml"
+
+all_rows = []
+
+for label, key, seed42_defaults in arms_eval:
+    for seed in seeds:
+        found_ckpt = None
+        if seed == 42:
+            candidates = seed42_defaults + [f"runs/crack_distill_ablation_{key}_s42_instance_seg_yolo11n-seg/weights/best.pt"]
+        else:
+            candidates = [
+                f"runs/crack_distill_ablation_{key}_s{seed}_instance_seg_yolo11n-seg/weights/best.pt",
+                f"runs/segment/crack_distill/ablation_{key}_s{seed}/weights/best.pt",
+                f"runs/ablation_{key}_s{seed}/weights/best.pt",
+            ]
+        
+        for cand in candidates:
+            if Path(cand).exists():
+                found_ckpt = cand
+                break
+            abs_c = Path("/kaggle/working") / cand
+            if abs_c.exists():
+                found_ckpt = str(abs_c)
+                break
+            # Search /kaggle/input for exact matches
+            if Path("/kaggle/input").exists():
+                cand_p = Path(cand)
+                matches = list(Path("/kaggle/input").glob(f"**/{cand_p.parent.name}/{cand_p.name}"))
+                if matches:
+                    found_ckpt = str(matches[0])
+                    break
+
+        if found_ckpt:
+            try:
+                m = YOLO(found_ckpt)
+                res = m.val(data=data_yaml, split="val")
+                all_rows.append({
+                    "Arm": label,
+                    "Seed": seed,
+                    "Mask mAP50": getattr(res.seg, "map50", 0.0),
+                    "Mask mAP50-95": getattr(res.seg, "map", 0.0),
+                    "Box mAP50": getattr(res.box, "map50", 0.0),
+                    "Resolved Path": found_ckpt
+                })
+            except Exception as e:
+                print(f"⚠️ Error evaluating {label} (Seed {seed}): {e}")
+        else:
+            print(f"Skipping {label} Seed {seed}: Checkpoint not found.")
+
+df_raw = pd.DataFrame(all_rows)
+
+print("\\n" + "="*75)
+print("📊 INDIVIDUAL SEED EVALUATION RESULTS")
+print("="*75)
+if not df_raw.empty:
+    print(df_raw.to_string(index=False))
+    
+    # Statistical Aggregation (mean ± std)
+    agg_summary = []
+    for arm_name, group in df_raw.groupby("Arm"):
+        m_seg50 = group["Mask mAP50"].values
+        m_seg95 = group["Mask mAP50-95"].values
+        b_box50 = group["Box mAP50"].values
+        
+        agg_summary.append({
+            "Ablation Arm": arm_name,
+            "Seeds Evaluated": len(group),
+            "Mask mAP50 (Mean ± Std)": f"{np.mean(m_seg50):.4f} ± {np.std(m_seg50):.4f}",
+            "Mask mAP50-95 (Mean ± Std)": f"{np.mean(m_seg95):.4f} ± {np.std(m_seg95):.4f}",
+            "Box mAP50 (Mean ± Std)": f"{np.mean(b_box50):.4f} ± {np.std(b_box50):.4f}",
+        })
+        
+    df_agg = pd.DataFrame(agg_summary)
+    print("\\n" + "="*75)
+    print("📈 FINAL MULTI-SEED STATISTICAL SUMMARY (MEAN ± STD)")
+    print("="*75)
+    print(df_agg.to_string(index=False))
+else:
+    print("No multi-seed checkpoints found.")
+"""
+
+nb7_cells.append(make_cell("code", aggregation_code))
+
+with open(out_dir / "nb7_seed_reruns.ipynb", "w") as f:
+    json.dump(make_nb(nb7_cells), f, indent=1, ensure_ascii=False)
+print("Created nb7_seed_reruns.ipynb")
+
 
 

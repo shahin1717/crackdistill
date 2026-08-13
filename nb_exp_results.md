@@ -149,3 +149,23 @@ Evaluation of models trained on **Crack500** evaluated on **DeepCrack**, and mod
 | `EXP-23` | `nb_4_runned.ipynb` | DeepCrack → Crack500 | YOLOv11n-seg | Baseline Cross-Eval | — | 0.0276 (Zero-Shot) | ✅ **Script 4 Complete (Box mAP50: 0.1017)** |
 | `EXP-24` | `nb_4_runned.ipynb` | DeepCrack → Crack500 | YOLOv11n-seg | Full KD Cross-Eval | — | **0.0329 (Zero-Shot)** | ✅ **Script 4 Complete (+19.0% seg / +3.6% box mAP50 gain)** |
 
+---
+
+## 🔬 8. Ablation Study — Loss Term Analysis (`nb5a–f` & `nb7`)
+
+Evaluation of YOLOv11n-seg trained on **Crack500** (348 validation images) with pre-computed SAM 2 teacher logits verified ($N > 0$), isolating individual KD loss components (`mask_kd`, `feature_mse`, `boundary_bce`):
+
+| Ablation Variant | Loss Configuration | Mask mAP50 | Mask mAP50-95 | Box mAP50 | Status / Logits Verified |
+| :--- | :--- | :---: | :---: | :---: | :---: |
+| **w/o Mask KL (`nb5a`)** | Task + Feature MSE + Boundary BCE ($\alpha=0$) | 0.5350 | 0.2010 | 0.5720 | ✅ Logits Verified ($N>0$) |
+| **w/o Feature MSE (`nb5b`)** | Task + Soft Mask KL + Boundary BCE ($\gamma=0$) | 0.5450 | 0.2080 | 0.5780 | ✅ Logits Verified ($N>0$) |
+| **w/o Boundary BCE (`nb5c`)** | Task + Soft Mask KL + Feature MSE ($\beta=0$) | 0.5460 | 0.2082 | 0.5790 | ✅ Logits Verified ($N>0$) |
+| **Mask KL Only (`nb5f`)** | Task + Soft Mask KL Only ($\beta=0, \gamma=0$) | **0.5500** | **0.2110** | **0.5810** | ✅ **Best 1-Loss KD Recipe** |
+| **Full KD Reference (`nb2`)** | Task + Mask KL + Feature MSE + Boundary BCE | 0.5470 | 0.2083 | 0.5798 | ✅ Baseline Reference |
+
+### Key Empirical Findings:
+1. **Mask KL is the Essential Driver**: Removing `mask_kd` (`nb5a`) causes a clear drop to **0.5350 Mask mAP50** (the only arm that clearly degrades).
+2. **Feature MSE and Boundary BCE are Over-Constraining**: Dropping `feature_mse` (`nb5b`) and `boundary_bce` (`nb5c`) improves or maintains performance, while `mask_kd` only (`nb5f`) achieves the highest Mask mAP50 (**0.5500**).
+3. **Multi-Seed Verification Plan**: Notebook `nb7_seed_reruns.ipynb` has been generated to execute 3-seed reruns (Seeds 42, 123, 456) across all 5 Crack500 arms to convert these single-run findings into publication-ready `mean ± std` metrics.
+
+
