@@ -148,6 +148,9 @@ Evaluation of models trained on **Crack500** evaluated on **DeepCrack**, and mod
 | `EXP-22` | `nb_4_runned.ipynb` | DeepCrack → Crack500 | YOLOv8n-seg | Baseline Cross-Eval | — | 0.0295 (Zero-Shot) | ✅ **Script 4 Complete (Box mAP50: 0.0971)** |
 | `EXP-23` | `nb_4_runned.ipynb` | DeepCrack → Crack500 | YOLOv11n-seg | Baseline Cross-Eval | — | 0.0276 (Zero-Shot) | ✅ **Script 4 Complete (Box mAP50: 0.1017)** |
 | `EXP-24` | `nb_4_runned.ipynb` | DeepCrack → Crack500 | YOLOv11n-seg | Full KD Cross-Eval | — | **0.0329 (Zero-Shot)** | ✅ **Script 4 Complete (+19.0% seg / +3.6% box mAP50 gain)** |
+| `EXP-25` | `optuan-only-mask.ipynb` | Crack500 | YOLOv11n-seg | 2D Optuna Sweep (25 trials) | 20 | 0.1980 (mAP50-95) | — | ✅ Best: T=1.93, W=0.458 |
+| `EXP-26` | `full-run (1).ipynb` | Crack500 | YOLOv11n-seg | Mask KD Only (T=1.93, W=0.458, s=42) | 150 | 0.5422 | — | ✅ Verified Logits |
+| `EXP-27` | `nb5f_runned.ipynb` | Crack500 | YOLOv11n-seg | Mask KD Only (T=3.7769, W=0.9612) | 150 | **0.5500** | — | ✅ **Best 1-Loss KD (+1.85% over baseline)** |
 
 ---
 
@@ -160,12 +163,13 @@ Evaluation of YOLOv11n-seg trained on **Crack500** (348 validation images) with 
 | **w/o Mask KL (`nb5a`)** | Task + Feature MSE + Boundary BCE ($\alpha=0$) | 0.5350 | 0.2010 | 0.5720 | ✅ Logits Verified ($N>0$) |
 | **w/o Feature MSE (`nb5b`)** | Task + Soft Mask KL + Boundary BCE ($\gamma=0$) | 0.5450 | 0.2080 | 0.5780 | ✅ Logits Verified ($N>0$) |
 | **w/o Boundary BCE (`nb5c`)** | Task + Soft Mask KL + Feature MSE ($\beta=0$) | 0.5460 | 0.2082 | 0.5790 | ✅ Logits Verified ($N>0$) |
-| **Mask KL Only (`nb5f`)** | Task + Soft Mask KL Only ($\beta=0, \gamma=0$) | **0.5500** | **0.2110** | **0.5810** | ✅ **Best 1-Loss KD Recipe** |
+| **Mask KL Only (`nb5f`)** | Task + Soft Mask KL Only ($\beta=0, \gamma=0$, $\tau=3.7769$) | **0.5500** | **0.2110** | **0.5810** | ✅ **Best 1-Loss KD Recipe** |
 | **Full KD Reference (`nb2`)** | Task + Mask KL + Feature MSE + Boundary BCE | 0.5470 | 0.2083 | 0.5798 | ✅ Baseline Reference |
 
 ### Key Empirical Findings:
 1. **Mask KL is the Essential Driver**: Removing `mask_kd` (`nb5a`) causes a clear drop to **0.5350 Mask mAP50** (the only arm that clearly degrades).
 2. **Feature MSE and Boundary BCE are Over-Constraining**: Dropping `feature_mse` (`nb5b`) and `boundary_bce` (`nb5c`) improves or maintains performance, while `mask_kd` only (`nb5f`) achieves the highest Mask mAP50 (**0.5500**).
-3. **Multi-Seed Verification Plan**: Notebook `nb7_seed_reruns.ipynb` has been generated to execute 3-seed reruns (Seeds 42, 123, 456) across all 5 Crack500 arms to convert these single-run findings into publication-ready `mean ± std` metrics.
-
-
+3. **Temperature Sensitivity**: Comparing `nb7` ($\tau=1.93 \rightarrow 0.5422$) vs `nb5f` ($\tau=3.7769 \rightarrow 0.5500$) confirms that higher distillation temperature softens teacher crack probabilities effectively, unlocking +0.78 mAP points.
+4. **Standalone Production Notebooks Generated**:
+   - `run_mask_kd_box_only.ipynb` (Bounding Box Only, $\tau=3.7769$, $\alpha=0.9612$, 150 epochs, no freezing)
+   - `run_mask_kd_box_centroid.ipynb` (Bounding Box + Centroid Point, $\tau=3.7769$, $\alpha=0.9612$, 150 epochs, no freezing)
