@@ -346,8 +346,10 @@ class KDSegmentationTrainer(SegmentationTrainer):
         # Determine device
         device = next(self.model.parameters()).device
 
-        # Standard layers to monitor
-        layers_to_monitor = self.kd_cfg.losses.feature.layers if hasattr(self.kd_cfg.losses.feature, "layers") else [2, 5, 8]
+        # Standard layers to monitor (default 12, 15, 18 for PANet Neck if method is cwd, otherwise 2, 5, 8)
+        feat_method = getattr(self.kd_cfg.losses.feature, "method", "mse") if hasattr(self.kd_cfg.losses, "feature") else "mse"
+        default_layers = [12, 15, 18] if feat_method == "cwd" else [2, 5, 8]
+        layers_to_monitor = self.kd_cfg.losses.feature.layers if hasattr(self.kd_cfg.losses.feature, "layers") else default_layers
 
         captured_shapes = {}
         def temp_hook(layer_idx):
@@ -382,11 +384,20 @@ class KDSegmentationTrainer(SegmentationTrainer):
                 in_channels = captured_shapes[idx][1]
                 feature_h = captured_shapes[idx][2]
                 stride = self.args.imgsz // feature_h
-                out_channels = 64 if stride <= 4 else 256
+                out_channels = 64 if stride <= 8 else 256
                 
-                # Create a 1x1 Conv to align channels
-                proj_dict[f"layer_{idx}"] = nn.Conv2d(in_channels, out_channels, kernel_size=1)
-                print(f"[KD] Feature projection layer {idx}: stride {stride}, channels {in_channels} -> {out_channels}")
+                # Cross-Architecture Projector (CAP): 2-stage conv with BatchNorm for CWD, or 1x1 for MSE
+                if feat_method == "cwd":
+                    proj_dict[f"layer_{idx}"] = nn.Sequential(
+                        nn.Conv2d(in_channels, out_channels, kernel_size=1, bias=False),
+                        nn.BatchNorm2d(out_channels),
+                        nn.GELU(),
+                        nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, groups=out_channels, bias=False),
+                        nn.BatchNorm2d(out_channels)
+                    )
+                else:
+                    proj_dict[f"layer_{idx}"] = nn.Conv2d(in_channels, out_channels, kernel_size=1)
+                print(f"[KD] Feature projection layer {idx} ({feat_method}): stride {stride}, channels {in_channels} -> {out_channels}")
 
         # Register projection layers on the model so they are part of optimizer parameters
         model.add_module("proj_layers", proj_dict)
@@ -400,7 +411,9 @@ class KDSegmentationTrainer(SegmentationTrainer):
         self._hook_handles.clear()
         KDSegmentationTrainer.student_features.clear()
         
-        layers_to_monitor = self.kd_cfg.losses.feature.layers if hasattr(self.kd_cfg.losses.feature, "layers") else [2, 5, 8]
+        feat_method = getattr(self.kd_cfg.losses.feature, "method", "mse") if hasattr(self.kd_cfg.losses, "feature") else "mse"
+        default_layers = [12, 15, 18] if feat_method == "cwd" else [2, 5, 8]
+        layers_to_monitor = self.kd_cfg.losses.feature.layers if hasattr(self.kd_cfg.losses.feature, "layers") else default_layers
         for idx in layers_to_monitor:
             if idx < len(model.model):
                 h = model.model[idx].register_forward_hook(ActiveHook(f"layer_{idx}"))
@@ -687,11 +700,16 @@ class KDSegmentationTrainer(SegmentationTrainer):
             if self.kd_cfg.losses.boundary.enabled and loss_boundary_count > 0:
                 kd_losses["boundary"] = (loss_boundary / loss_boundary_count) * self.kd_cfg.losses.boundary.weight
 
-            # 2. Compute L_feature (Scale-matched alignment)
+            # 2. Compute L_feature (Scale-matched alignment or CWD)
             if self.kd_cfg.losses.feature.enabled:
                 loss_feat = torch.tensor(0.0, device=self.device)
-                layers_to_monitor = self.kd_cfg.losses.feature.layers if hasattr(self.kd_cfg.losses.feature, "layers") else [2, 5, 8]
+                feat_method = getattr(self.kd_cfg.losses.feature, "method", "mse")
+                default_layers = [12, 15, 18] if feat_method == "cwd" else [2, 5, 8]
+                layers_to_monitor = self.kd_cfg.losses.feature.layers if hasattr(self.kd_cfg.losses.feature, "layers") else default_layers
                 feat_count = 0
+                
+                # Layer importance weights (P3 = 0.5, P4 = 0.3, P5 = 0.2)
+                stage_weights = {12: 0.5, 15: 0.3, 18: 0.2}
                 
                 for idx in layers_to_monitor:
                     feat_key = f"layer_{idx}"
@@ -704,7 +722,7 @@ class KDSegmentationTrainer(SegmentationTrainer):
                         stride = self.args.imgsz // feature_h
 
                         # Map layer stride directly to SAM feature keys & channels (architecture independent)
-                        if stride <= 4:
+                        if stride <= 8:
                             target_key = "feat1"
                             out_channels = 64
                         else:
@@ -726,17 +744,27 @@ class KDSegmentationTrainer(SegmentationTrainer):
                         if sf_proj.shape[2:] != tf_batch.shape[2:]:
                             tf_batch = F.interpolate(tf_batch, size=sf_proj.shape[2:], mode="bilinear", align_corners=False)
                         
-                        # FIX: normalize per-layer MSE so scale doesn't grow with channel dim
-                        loss_feat = loss_feat + F.mse_loss(sf_proj, tf_batch.detach())
-                        feat_count += 1
+                        if feat_method == "cwd":
+                            # Channel-Wise Distillation (Spatial Softmax per channel + KL Divergence)
+                            t_feat = float(getattr(self.kd_cfg.losses.feature, "temperature", 4.0))
+                            b, c, h, w = sf_proj.shape
+                            s_soft = F.softmax(sf_proj.view(b, c, -1) / t_feat, dim=-1)
+                            t_soft = F.softmax(tf_batch.detach().view(b, c, -1) / t_feat, dim=-1)
+                            cwd_kl = F.kl_div(s_soft.log(), t_soft, reduction="batchmean") * (t_feat ** 2)
+                            w_stage = stage_weights.get(idx, 1.0 / len(layers_to_monitor))
+                            loss_feat = loss_feat + w_stage * cwd_kl
+                            feat_count += 1
+                        else:
+                            # Standard normalized per-layer MSE
+                            loss_feat = loss_feat + F.mse_loss(sf_proj, tf_batch.detach())
+                            feat_count += 1
                     else:
                         if feat_key not in self.student_features and not self._no_logits_warned:
                             print(f"[KD] Warning: Hook feature {feat_key} not found in student_features. "
                                   f"Forward hooks might not be triggering. Skipping feature KD.")
                             self._no_logits_warned = True
                 
-                # FIX: average across layers so total feature loss is ~1 layer's worth, not 3×
-                if feat_count > 0:
+                if feat_count > 0 and feat_method != "cwd":
                     loss_feat = loss_feat / feat_count
                 kd_losses["feature"] = loss_feat * self.kd_cfg.losses.feature.weight
 
