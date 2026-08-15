@@ -608,17 +608,20 @@ class KDSegmentationTrainer(SegmentationTrainer):
                     # Extract corresponding SAM teacher logits: (N_pos, 256, 256)
                     sam_logits_matched = sam_logits[mask_idx]
                     
-                    # Resize both to target resolution (256, 256)
+                    # Target resolution (default 256x256, or 512x512 if high_res enabled)
+                    target_res = 512 if getattr(self.kd_cfg.losses.mask_kd, "high_res", False) else 256
+                    
+                    # Resize both to target resolution
                     student_mask_logits_resized = F.interpolate(
                         pred_mask_logits.unsqueeze(1),
-                        size=(256, 256),
+                        size=(target_res, target_res),
                         mode="bilinear",
                         align_corners=False
                     ).squeeze(1)
                     
                     sam_logits_matched_resized = F.interpolate(
                         sam_logits_matched.unsqueeze(1),
-                        size=(256, 256),
+                        size=(target_res, target_res),
                         mode="bilinear",
                         align_corners=False
                     ).squeeze(1)
@@ -637,8 +640,31 @@ class KDSegmentationTrainer(SegmentationTrainer):
                         inv_p_log = F.logsigmoid(-stu_clamped)
                         
                         kl = q * (torch.log(q + 1e-8) - p_log) + inv_q * (torch.log(inv_q + 1e-8) - inv_p_log)
-                        loss_mask_kd = loss_mask_kd + kl.mean() * (self.temperature ** 2)
+                        
+                        # Foreground-Dilated / Region-Focused Mask-KL (if enabled)
+                        use_focused = getattr(self.kd_cfg.losses.mask_kd, "focused", False) or getattr(self.kd_cfg.losses.mask_kd, "foreground_dilated", False)
+                        if use_focused:
+                            fg_core = (q > 0.35).float().unsqueeze(1)
+                            fg_dilated = F.max_pool2d(fg_core, kernel_size=9, stride=1, padding=4).squeeze(1)
+                            fg_core = fg_core.squeeze(1)
+                            weight_map = torch.where(fg_core > 0, 1.0, torch.where(fg_dilated > 0, 0.5, 0.05))
+                            kl_weighted = (kl * weight_map).sum(dim=(-1, -2)) / (weight_map.sum(dim=(-1, -2)) + 1e-6)
+                            loss_mask_kd = loss_mask_kd + kl_weighted.mean() * (self.temperature ** 2)
+                        else:
+                            loss_mask_kd = loss_mask_kd + kl.mean() * (self.temperature ** 2)
                         loss_mask_kd_count += 1
+
+                    # L_affinity (Spatial Pixel Affinity / Directional Gradient KD)
+                    affinity_cfg = getattr(self.kd_cfg.losses, "affinity", None)
+                    if affinity_cfg and getattr(affinity_cfg, "enabled", False):
+                        p_stu = torch.sigmoid(stu_clamped)
+                        d_stu_x = p_stu[:, :, 1:] - p_stu[:, :, :-1]
+                        d_stu_y = p_stu[:, 1:, :] - p_stu[:, :-1, :]
+                        d_tea_x = q[:, :, 1:] - q[:, :, :-1]
+                        d_tea_y = q[:, 1:, :] - q[:, :-1, :]
+                        loss_aff = F.mse_loss(d_stu_x, d_tea_x.detach()) + F.mse_loss(d_stu_y, d_tea_y.detach())
+                        loss_affinity = loss_affinity + loss_aff
+                        loss_affinity_count += 1
 
                     # L_boundary (Per-instance matched boundary weighted loss)
                     if self.kd_cfg.losses.boundary.enabled:
@@ -653,6 +679,10 @@ class KDSegmentationTrainer(SegmentationTrainer):
 
             if self.kd_cfg.losses.mask_kd.enabled and loss_mask_kd_count > 0:
                 kd_losses["mask_kd"] = (loss_mask_kd / loss_mask_kd_count) * self.kd_cfg.losses.mask_kd.weight
+
+            affinity_cfg = getattr(self.kd_cfg.losses, "affinity", None)
+            if affinity_cfg and getattr(affinity_cfg, "enabled", False) and loss_affinity_count > 0:
+                kd_losses["affinity"] = (loss_affinity / loss_affinity_count) * float(getattr(affinity_cfg, "weight", 1.0))
                 
             if self.kd_cfg.losses.boundary.enabled and loss_boundary_count > 0:
                 kd_losses["boundary"] = (loss_boundary / loss_boundary_count) * self.kd_cfg.losses.boundary.weight
