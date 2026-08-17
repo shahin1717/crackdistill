@@ -50,9 +50,10 @@ The locked **no-KD** baselines against which all gains are measured:
 |:---|:---|:---:|:---:|:---:|:---:|
 | `01_seed42` | Locked Baseline (Mask-KL, seed 42) | 0.5424 | 0.2009 | 0.5976 | **+0.0024 (+0.4%)** |
 | `03_dilated` | Foreground-Dilated KL (8px band) | 0.5387 | 0.2030 | 0.5819 | -0.0013 (-0.2%) |
-| `04_affinity` | Spatial Pixel Affinity KD | **0.5569** ⭐ | 0.2065 | 0.5973 | **+0.0169 (+3.1%)** |
 | `05_multiscale` | Multi-Scale 512×512 Logit Alignment | 0.5485 | 0.2087 | **0.6001** ⭐ | **+0.0085 (+1.6%)** |
-| `06_layerkd` | Neck Multi-Scale LayerKD (CWD PANet) | 0.5538 | **0.2109** ⭐ | 0.5947 | **+0.0138 (+2.6%)** |
+| `09_focal` | Focal Mask-KL ($\gamma=2.0$) | 0.5413 | 0.2060 | 0.5847 | **+0.0013 (+0.2%)** |
+| `04_affinity` | Spatial Pixel Affinity KD (Pre-fix) | **0.5569** ⭐ | 0.2065 | 0.5973 | **+0.0169 (+3.1%)** |
+| `06_layerkd` | Neck Multi-Scale LayerKD (Pre-fix) | 0.5538 | **0.2109** ⭐ | 0.5947 | **+0.0138 (+2.6%)** |
 
 ---
 
@@ -64,8 +65,9 @@ The locked **no-KD** baselines against which all gains are measured:
 |:---|:---|:---:|:---:|:---:|
 | `01_seed42` | Locked Baseline | 0.0848 | 0.0196 | — |
 | `03_dilated` | Foreground-Dilated KL | **0.1007** ⭐ | **0.0241** ⭐ | **+18.7% relative** |
-| `04_affinity` | Spatial Pixel Affinity KD | 0.0842 | 0.0207 | -0.7% |
+| `09_focal` | Focal Mask-KL ($\gamma=2.0$) | **0.0931** ⭐ | **0.0242** ⭐ | **+9.8% relative** |
 | `05_multiscale` | Multi-Scale 512×512 | 0.0872 | 0.0226 | +2.8% |
+| `04_affinity` | Spatial Pixel Affinity KD | 0.0842 | 0.0207 | -0.7% |
 | `06_layerkd` | Neck LayerKD | 0.0799 | 0.0187 | -5.8% |
 
 **Full-Resolution Tiled Sliding-Window vs. Direct Resize (Dice Score on uncropped images):**
@@ -110,7 +112,7 @@ Benchmarked on **NVIDIA Tesla T4 GPU** (CUDA, FP32, 500 measured forward passes,
 | "Tiled inference recovers 80%+ resolution degradation" | ✅ YES | Dice gains from +52% to +83% across all models |
 | "Feature MSE / Boundary BCE rejected" | ✅ CONFIRMED | Ablation EXP-27 (nb5f) proves Mask-KL only = best |
 | "Box prompts beat centroid prompts" | ✅ CONFIRMED | EXP-14 = EXP-15 (identical scores); centroid fails 0.5254 |
-| "τ=3.7769 beats τ=1.93 at 150 epochs" | ✅ CONFIRMED | EXP-27 (0.5500) > EXP-26 (0.5422), +0.78 mAP pts |
+| "τ=3.7769 beats τ=1.93 at 150 epochs" | ✅ CONFIRMED | EXP-27 (0.5500) > EXP-26 (0.5422), delta = +0.78 mAP pts at epoch 150 |
 
 ---
 

@@ -598,6 +598,9 @@ class KDSegmentationTrainer(SegmentationTrainer):
             loss_mask_kd = torch.tensor(0.0, device=self.device)
             loss_mask_kd_count = 0
             
+            loss_affinity = torch.tensor(0.0, device=self.device)
+            loss_affinity_count = 0
+
             loss_boundary = torch.tensor(0.0, device=self.device)
             loss_boundary_count = 0
 
@@ -729,20 +732,22 @@ class KDSegmentationTrainer(SegmentationTrainer):
                             target_key = "image_embed"
                             out_channels = 256
                         
-                        # Stack SAM features for the batch
+                        # Stack SAM features for the batch (per-item spatial alignment before concat)
                         tf_list = []
+                        target_h, target_w = sf_proj.shape[2], sf_proj.shape[3]
                         for img_path in self._current_paths:
                             stem = Path(img_path).stem
-                            if stem in self._sam_features:
-                                tf_list.append(self._sam_features[stem][target_key])
+                            if stem in self._sam_features and target_key in self._sam_features[stem]:
+                                tf_item = self._sam_features[stem][target_key]
+                                if tf_item.ndim == 3:
+                                    tf_item = tf_item.unsqueeze(0)
+                                if tf_item.shape[2:] != (target_h, target_w):
+                                    tf_item = F.interpolate(tf_item, size=(target_h, target_w), mode="bilinear", align_corners=False)
+                                tf_list.append(tf_item)
                             else:
-                                tf_list.append(torch.zeros((1, out_channels, feature_h, feature_h), device=self.device))
+                                tf_list.append(torch.zeros((1, out_channels, target_h, target_w), device=self.device))
                                 
                         tf_batch = torch.cat(tf_list, dim=0).to(dtype=sf_proj.dtype)
-                        
-                        # Resize SAM feature spatially to match student feature
-                        if sf_proj.shape[2:] != tf_batch.shape[2:]:
-                            tf_batch = F.interpolate(tf_batch, size=sf_proj.shape[2:], mode="bilinear", align_corners=False)
                         
                         if feat_method == "cwd":
                             # Channel-Wise Distillation (Spatial Softmax per channel + KL Divergence)
