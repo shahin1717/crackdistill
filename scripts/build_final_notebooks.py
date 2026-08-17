@@ -53,6 +53,14 @@ def make_nb(cells):
     }
 
 
+def format_python_dict(d, indent=4):
+    lines = ["{\n"]
+    for k, v in d.items():
+        lines.append(f"{' ' * indent}{repr(k)}: {repr(v)},\n")
+    lines.append("}")
+    return "".join(lines)
+
+
 def generate_training_notebook(variant_name, title, description, overrides_dict, seed=42):
     exp_name = f"{variant_name}_seed{seed}_150ep"
     
@@ -164,7 +172,7 @@ from utils.config_loader import load_config, override_config
 cfg = load_config("configs/config.yaml")
 EXPERIMENT_NAME = "{exp_name}"
 
-overrides = {json.dumps(overrides_dict, indent=4)}
+overrides = {format_python_dict(overrides_dict)}
 overrides["project.name"] = "crack_distill"
 overrides["project.experiment"] = EXPERIMENT_NAME
 overrides["project.seed"] = {seed}
