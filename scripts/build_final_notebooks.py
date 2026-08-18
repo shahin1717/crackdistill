@@ -263,6 +263,7 @@ This notebook evaluates trained YOLOv11n-seg checkpoints on **unseen, full-resol
 3. **Head-to-Head Comparison**: Compares all available checkpoints (Baseline, Mask KD, Foreground-Dilated, LayerKD, Focal, Combined)."""),
 
         make_cell('code', """# ── Environment & Imports ──
+!mkdir -p scripts configs utils distillation data/datasets results
 !pip install -q ultralytics albumentations pycocotools opencv-python Pillow matplotlib tqdm pandas
 import os, cv2, json, time, glob
 import numpy as np
