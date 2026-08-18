@@ -42,18 +42,19 @@ The locked **no-KD** baselines against which all gains are measured:
 
 ---
 
-## 3. Production Training Runs — Final Results (Notebooks 01, 03–06)
+## 3. Production Training Runs — Final Results (Notebooks 01, 03–06, 09)
 
 **In-domain (Crack500 cropped validation, 512×512 direct resize):**
 
 | Notebook | Recipe | In-Domain Mask mAP50 | In-Domain Mask mAP50-95 | In-Domain Box mAP50 | vs. Baseline (0.5400) |
 |:---|:---|:---:|:---:|:---:|:---:|
+| `05_multiscale` | Multi-Scale 512×512 Logit Alignment | **0.5485** ⭐ | **0.2087** ⭐ | **0.6001** ⭐ | **+0.0085 (+1.6%)** |
 | `01_seed42` | Locked Baseline (Mask-KL, seed 42) | 0.5424 | 0.2009 | 0.5976 | **+0.0024 (+0.4%)** |
-| `03_dilated` | Foreground-Dilated KL (8px band) | 0.5387 | 0.2030 | 0.5819 | -0.0013 (-0.2%) |
-| `05_multiscale` | Multi-Scale 512×512 Logit Alignment | 0.5485 | 0.2087 | **0.6001** ⭐ | **+0.0085 (+1.6%)** |
+| `06_layerkd` | Neck Multi-Scale LayerKD (CWD) | 0.5422 | 0.2063 | 0.5903 | **+0.0022 (+0.4%)** |
 | `09_focal` | Focal Mask-KL ($\gamma=2.0$) | 0.5413 | 0.2060 | 0.5847 | **+0.0013 (+0.2%)** |
-| `04_affinity` | Spatial Pixel Affinity KD (Pre-fix) | **0.5569** ⭐ | 0.2065 | 0.5973 | **+0.0169 (+3.1%)** |
-| `06_layerkd` | Neck Multi-Scale LayerKD (Pre-fix) | 0.5538 | **0.2109** ⭐ | 0.5947 | **+0.0138 (+2.6%)** |
+| `09_combined` | Combined Affinity + Dilated KD | 0.5409 | 0.2078 | 0.5881 | **+0.0009 (+0.2%)** |
+| `03_dilated` | Foreground-Dilated KL (8px band) | 0.5387 | 0.2030 | 0.5819 | -0.0013 (-0.2%) |
+| `04_affinity` | Spatial Pixel Affinity KD | 0.5348 | 0.2042 | 0.5831 | -0.0052 (-1.0%) |
 
 ---
 
@@ -63,12 +64,13 @@ The locked **no-KD** baselines against which all gains are measured:
 
 | Notebook | Recipe | OOD Mask mAP50 | OOD Mask mAP50-95 | vs. Baseline (0.0848) |
 |:---|:---|:---:|:---:|:---:|
-| `01_seed42` | Locked Baseline | 0.0848 | 0.0196 | — |
-| `03_dilated` | Foreground-Dilated KL | **0.1007** ⭐ | **0.0241** ⭐ | **+18.7% relative** |
-| `09_focal` | Focal Mask-KL ($\gamma=2.0$) | **0.0931** ⭐ | **0.0242** ⭐ | **+9.8% relative** |
+| `03_dilated` | Foreground-Dilated KL | **0.1007** ⭐ | 0.0241 | **+18.7% relative (👑 #1 OOD)** |
+| `06_layerkd` | Neck Multi-Scale LayerKD | **0.0944** ⭐ | **0.0252** ⭐ | **+11.3% relative (👑 #1 mAP50-95)** |
+| `09_focal` | Focal Mask-KL ($\gamma=2.0$) | **0.0931** ⭐ | 0.0242 | **+9.8% relative (🥉 #3 OOD)** |
 | `05_multiscale` | Multi-Scale 512×512 | 0.0872 | 0.0226 | +2.8% |
-| `04_affinity` | Spatial Pixel Affinity KD | 0.0842 | 0.0207 | -0.7% |
-| `06_layerkd` | Neck LayerKD | 0.0799 | 0.0187 | -5.8% |
+| `09_combined` | Combined Affinity + Dilated KD | 0.0851 | 0.0200 | +0.4% |
+| `01_seed42` | Locked Baseline | 0.0848 | 0.0196 | — |
+| `04_affinity` | Spatial Pixel Affinity KD | 0.0831 | 0.0214 | -2.0% |
 
 **Full-Resolution Tiled Sliding-Window vs. Direct Resize (Dice Score on uncropped images):**
 
@@ -105,8 +107,8 @@ Benchmarked on **NVIDIA Tesla T4 GPU** (CUDA, FP32, 500 measured forward passes,
 
 | Claim in `good_review.md` | Verified? | Actual Result |
 |:---|:---:|:---|
-| "Mask mAP50 reaching 0.5500" | ✅ YES | `04_affinity` = **0.5569**, `06_layerkd` = **0.5538**, ablation peak = **0.5500** (EXP-27) |
-| "+10.3% relative OOD gain" | ✅ EXCEEDED | `03_dilated` = **+18.7%** OOD Mask mAP50 over baseline |
+| "Mask mAP50 reaching 0.5500" | ✅ YES | `05_multiscale` = **0.5485**, ablation peak = **0.5500** (EXP-27) |
+| "+10.3% relative OOD gain" | ✅ EXCEEDED | `03_dilated` = **+18.7%** (0.1007), `06_layerkd` = **+11.3%** (0.0944) |
 | ">100 FPS on edge hardware" | ✅ YES | **107.8 FPS** / 9.27 ms on T4 |
 | "Zero SAM 2 runtime dependency" | ✅ YES | All inference is student-only; SAM 2 is offline |
 | "Tiled inference recovers 80%+ resolution degradation" | ✅ YES | Dice gains from +52% to +83% across all models |
@@ -133,16 +135,15 @@ KD models outperform baselines on **zero-shot cross-dataset transfer**:
 
 | Goal | Recommended Model | Key Metric |
 |:---|:---|:---|
-| **Best Overall In-Domain Accuracy** | `04_affinity` (Spatial Pixel Affinity KD) | **0.5569 Mask mAP50** (+3.1% vs baseline) |
+| **Best In-Domain Accuracy & Box mAP** | `05_multiscale` (512×512 Alignment) | **0.5485 Mask mAP50 / 0.6001 Box mAP50** |
 | **Best OOD Generalization (mAP-based)** | `03_dilated` (Foreground-Dilated KL) | **0.1007 OOD Mask mAP50** (+18.7% vs baseline) |
+| **Best OOD Fine-Grained Precision** | `06_layerkd` (Neck CWD LayerKD) | **0.0944 OOD mAP50 / 0.0252 OOD mAP50-95** |
 | **Best OOD Full-Resolution Deployment (Dice)** | `04_affinity` | **0.2683 Tiled Dice** — highest of all models |
-| **Best mAP50-95 (Fine-grained)** | `06_layerkd` | **0.2109 Mask mAP50-95** in-domain |
-| **Best Box Detection Accuracy** | `05_multiscale` | **0.6001 Box mAP50** |
 | **Best Edge Speed** | All (same architecture) | **107.8 FPS / 9.27 ms** on T4 |
 
 ### 🏆 Paper Primary Result Narrative
 
-The **Spatial Pixel Affinity KD variant** (`04_affinity`) achieves the highest in-domain segmentation accuracy at **Mask mAP50 = 0.5569**, representing a **+3.1% relative improvement** over the no-KD baseline (0.5400, EXP-10). When deployed on full-resolution uncropped (2000×1500) road photos using tiled sliding-window inference (512×512 patches, 20% overlap), the model achieves a **Dice score of 0.2683** — a **+67.8% improvement** over direct image resizing (0.1599) without any retraining. The **Foreground-Dilated KL variant** (`03_dilated`) achieves the strongest OOD robustness at **OOD Mask mAP50 = 0.1007**, a **+18.7% relative gain** over the baseline. All variants operate at **107.8 FPS with 9.27 ms latency** on a T4 GPU (2.84M parameters, 10.2 GFLOPs, 6.2 MB checkpoint), with **zero SAM 2 runtime dependency**.
+The **Multi-Scale 512×512 Alignment variant** (`05_multiscale`) achieves peak in-domain detection and segmentation accuracy at **Mask mAP50 = 0.5485** and **Box mAP50 = 0.6001**, outperforming the standard baseline across all metrics. For robust generalization on out-of-distribution uncropped road photos, the **Foreground-Dilated Mask-KL variant** (`03_dilated`) establishes the benchmark champion with **OOD Mask mAP50 = 0.1007** (+18.7% relative gain over baseline), while the **Multi-Scale Neck LayerKD variant** (`06_layerkd`) delivers the highest fine-grained localization precision at **OOD mAP50-95 = 0.0252**. When deployed on full-resolution uncropped (2000×1500) road imagery using tiled sliding-window inference (512×512 native patches), models achieve up to **0.2683 Dice score** — an improvement of **+52% to +83%** over direct image resizing without retraining. All variants operate at **107.8 FPS with 9.27 ms latency** on a T4 GPU (2.84M parameters, 10.2 GFLOPs, 6.2 MB checkpoint), with **zero SAM 2 runtime dependency**.
 
 ---
 
@@ -169,11 +170,13 @@ The **Spatial Pixel Affinity KD variant** (`04_affinity`) achieves the highest i
 | EXP-18 | `nb_3` | KD SegHead Frozen | 0.5046 | — | ✅ DeepCrack fix |
 | EXP-21 | `nb_4` | KD Cross C500→DC | 0.2741 | — | ✅ +5.4% zero-shot |
 | EXP-27 | `nb5f` | Mask-KL Only, τ=3.78 | **0.5500** | — | ✅ **Best ablation peak** |
-| `01_seed42` | `final_notebooks` | Production Baseline | 0.5424 | 0.0848 | ✅ |
-| `03_dilated` | `final_notebooks` | Foreground-Dilated KL | 0.5387 | **0.1007** ⭐ | ✅ Best OOD |
-| `04_affinity` | `final_notebooks` | Spatial Pixel Affinity | **0.5569** ⭐ | 0.0842 | ✅ Best in-domain |
-| `05_multiscale` | `final_notebooks` | Multi-Scale 512 | 0.5485 | 0.0872 | ✅ Best box mAP |
-| `06_layerkd` | `final_notebooks` | Neck CWD LayerKD | 0.5538 | 0.0799 | ✅ Best mAP50-95 |
+| `01_seed42` | `final_notebooks` | Production Baseline | 0.5424 | 0.0848 | ✅ Verified |
+| `03_dilated` | `final_notebooks` | Foreground-Dilated KL | 0.5387 | **0.1007** ⭐ | ✅ 👑 #1 OOD Champion |
+| `04_affinity` | `final_notebooks` | Spatial Pixel Affinity | 0.5348 | 0.0831 | ✅ Verified (Post-fix) |
+| `05_multiscale` | `final_notebooks` | Multi-Scale 512 | **0.5485** ⭐ | 0.0872 | ✅ 👑 #1 Box Champion |
+| `06_layerkd` | `final_notebooks` | Neck CWD LayerKD | 0.5422 | **0.0944** ⭐ | ✅ 👑 #1 OOD mAP50-95 |
+| `09_focal` | `final_notebooks` | Focal Mask-KL ($\gamma=2.0$) | 0.5413 | **0.0931** ⭐ | ✅ 🥉 #3 OOD Robustness |
+| `09_combined` | `final_notebooks` | Combined Affinity + Dilated | 0.5409 | 0.0851 | ✅ Verified (Post-fix) |
 
 ---
 
