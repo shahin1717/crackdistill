@@ -259,12 +259,12 @@ def generate_ood_tiled_eval_notebook():
         make_cell('markdown', """# 🔬 Standalone Out-of-Distribution & Tiled Inference Evaluation
 This notebook evaluates trained YOLOv11n-seg checkpoints on **unseen, full-resolution uncropped road crack photos**:
 1. **Direct Resizing Evaluation**: Standard evaluation at $512 \\times 512$.
-2. **Tiled / Sliding-Window Inference**: Dividing $2000 \\times 1500$ uncropped images into overlapping $512 \\times 512$ patches (20% overlap), running student inference at native training resolution, and stitching masks back together.
-3. **Head-to-Head Comparison**: Compares all available checkpoints (Baseline, Mask KD, Foreground-Dilated, Affinity)."""),
+2. **Gaussian-Weighted Tiled / Sliding-Window Inference**: Dividing $2000 \\times 1500$ uncropped images into overlapping $512 \\times 512$ patches ($25\\%$ overlap, $384\\text{px}$ stride) with **2D Gaussian Apodization Blending** (eliminating border artifacts and weighting center predictions).
+3. **Head-to-Head Comparison**: Compares all available checkpoints (Baseline, Mask KD, Foreground-Dilated, LayerKD, Focal, Combined)."""),
 
         make_cell('code', """# ── Environment & Imports ──
 !pip install -q ultralytics albumentations pycocotools opencv-python Pillow matplotlib tqdm pandas
-import os, cv2, json, time
+import os, cv2, json, time, glob
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -292,13 +292,24 @@ for root, dirs, files in os.walk(str(input_dir)):
 print("Uncropped validation dataset ready at data/datasets/crack500_uncropped_yolo/")
 """),
 
-        make_cell('code', """# ── Step 2: Tiled / Sliding-Window Inference Engine ──
+        make_cell('code', """# ── Step 2: Gaussian-Weighted Tiled Sliding-Window Inference Engine ──
 import torch
 
-def tiled_predict_image(model, img_bgr, tile_size=512, stride=410, conf=0.25):
+def create_gaussian_weight_map(tile_size=512, sigma=0.35):
+    \"\"\"Generates a 2D Gaussian window to smoothly blend overlapping tiles.\"\"\"
+    ax = np.linspace(-1, 1, tile_size)
+    gauss_1d = np.exp(-0.5 * (ax / sigma) ** 2)
+    gauss_2d = np.outer(gauss_1d, gauss_1d).astype(np.float32)
+    gauss_2d = np.maximum(gauss_2d, 0.05)  # minimum baseline floor for edges
+    return gauss_2d / gauss_2d.max()
+
+
+def tiled_predict_image_gaussian(model, img_bgr, tile_size=512, stride=384, conf=0.25, sigma=0.35):
+    \"\"\"Runs overlapping inference on full-res image with 2D Gaussian apodization blending.\"\"\"
     h, w = img_bgr.shape[:2]
-    full_mask = np.zeros((h, w), dtype=np.float32)
-    count_map = np.zeros((h, w), dtype=np.float32)
+    full_prob_map = np.zeros((h, w), dtype=np.float32)
+    weight_accum_map = np.zeros((h, w), dtype=np.float32)
+    weight_window = create_gaussian_weight_map(tile_size, sigma)
     
     y_steps = list(range(0, max(1, h - tile_size + 1), stride))
     if y_steps[-1] + tile_size < h:
@@ -314,49 +325,109 @@ def tiled_predict_image(model, img_bgr, tile_size=512, stride=410, conf=0.25):
             results = model.predict(tile, imgsz=tile_size, conf=conf, verbose=False, device="cuda" if torch.cuda.is_available() else "cpu")
             r = results[0]
             
-            tile_mask = np.zeros((tile_size, tile_size), dtype=np.float32)
+            tile_prob = np.zeros((tile_size, tile_size), dtype=np.float32)
             if r.masks is not None and len(r.masks) > 0:
                 for m in r.masks.data.cpu().numpy():
                     m_resized = cv2.resize(m, (tile_size, tile_size))
-                    tile_mask = np.maximum(tile_mask, m_resized)
+                    tile_prob = np.maximum(tile_prob, m_resized)
                     
-            full_mask[y0:y0+tile_size, x0:x0+tile_size] += tile_mask
-            count_map[y0:y0+tile_size, x0:x0+tile_size] += 1.0
+            full_prob_map[y0:y0+tile_size, x0:x0+tile_size] += tile_prob * weight_window
+            weight_accum_map[y0:y0+tile_size, x0:x0+tile_size] += weight_window
             
-    count_map = np.maximum(count_map, 1.0)
-    full_mask = full_mask / count_map
-    return (full_mask > 0.35).astype(np.uint8)
+    weight_accum_map = np.maximum(weight_accum_map, 1e-5)
+    full_prob_map = full_prob_map / weight_accum_map
+    return (full_prob_map > 0.35).astype(np.uint8)
 
-print("Tiled inference engine ready!")
+print("Gaussian-weighted tiled inference engine ready!")
 """),
 
-        make_cell('code', """# ── Step 3: Run Evaluation on Checkpoints ──
+        make_cell('code', """# ── Step 3: Discover Checkpoints & Run Cross-Evaluation ──
+def compute_dice(pred_mask, gt_mask):
+    intersection = np.logical_and(pred_mask, gt_mask).sum()
+    total = pred_mask.sum() + gt_mask.sum()
+    if total == 0:
+        return 1.0 if intersection == 0 else 0.0
+    return float(2.0 * intersection / total)
+
 ckpts = list(Path("/kaggle/input").glob("**/best.pt")) + list(Path("runs").glob("**/best.pt"))
 print(f"Discovered {len(ckpts)} checkpoints:")
 for c in ckpts:
     print(f"  - {c}")
 
+# Find ground-truth uncropped images and masks
+val_img_dir = Path("data/datasets/crack500_uncropped_yolo/images/val")
+all_val_imgs = sorted(list(val_img_dir.glob("*.jpg")) + list(val_img_dir.glob("*.png")))
+
 eval_summary = {}
 for ckpt in ckpts:
     name = ckpt.parent.parent.name
-    print(f"\\nEvaluating {name}...")
+    print(f"\\n{'='*50}\\nEvaluating Checkpoint: {name}\\nPath: {ckpt}\\n{'='*50}")
     model = YOLO(str(ckpt))
     
-    # 1. Direct Resize Val
+    # 1. Direct Resize Val (512x512)
     res_direct = model.val(data="data/datasets/crack500_uncropped_yolo/dataset.yaml", split="val", verbose=False)
+    direct_mAP50 = float(res_direct.seg.map50)
+    direct_mAP50_95 = float(res_direct.seg.map)
+    direct_box_mAP50 = float(res_direct.box.map50)
+    
+    # 2. Tiled Sliding-Window Full-Resolution Dice Evaluation
+    tiled_dices = []
+    direct_dices = []
+    
+    for img_p in tqdm(all_val_imgs[:50], desc=f"  Tiling eval ({name[:20]})", leave=False):
+        img_bgr = cv2.imread(str(img_p))
+        if img_bgr is None:
+            continue
+        h, w = img_bgr.shape[:2]
+        
+        # Load ground-truth mask if available
+        gt_mask_path = img_p.parent.parent.parent.parent / "crack500" / "valdata" / f"{img_p.stem}_mask.png"
+        if not gt_mask_path.exists():
+            # Fallback search
+            gt_matches = list(Path("data").glob(f"**/{img_p.stem}_mask.png"))
+            if gt_matches:
+                gt_mask_path = gt_matches[0]
+                
+        if gt_mask_path.exists():
+            gt_mask = cv2.imread(str(gt_mask_path), cv2.IMREAD_GRAYSCALE)
+            if gt_mask is not None:
+                gt_binary = (gt_mask > 127).astype(np.uint8)
+                
+                # A. Direct resize prediction
+                r_dir = model.predict(img_bgr, imgsz=512, conf=0.25, verbose=False)[0]
+                pred_dir = np.zeros((h, w), dtype=np.uint8)
+                if r_dir.masks is not None and len(r_dir.masks) > 0:
+                    for m in r_dir.masks.data.cpu().numpy():
+                        m_resized = cv2.resize(m, (w, h))
+                        pred_dir = np.maximum(pred_dir, (m_resized > 0.35).astype(np.uint8))
+                direct_dices.append(compute_dice(pred_dir, gt_binary))
+                
+                # B. Gaussian Tiled sliding-window prediction
+                pred_tiled = tiled_predict_image_gaussian(model, img_bgr, tile_size=512, stride=384, conf=0.25)
+                tiled_dices.append(compute_dice(pred_tiled, gt_binary))
+                
+    mean_direct_dice = float(np.mean(direct_dices)) if direct_dices else 0.0
+    mean_tiled_dice = float(np.mean(tiled_dices)) if tiled_dices else 0.0
     
     eval_summary[name] = {
-        "direct_mask_mAP50": float(res_direct.seg.map50),
-        "direct_mask_mAP50_95": float(res_direct.seg.map),
-        "direct_box_mAP50": float(res_direct.box.map50)
+        "direct_mask_mAP50": direct_mAP50,
+        "direct_mask_mAP50_95": direct_mAP50_95,
+        "direct_box_mAP50": direct_box_mAP50,
+        "full_res_direct_dice": mean_direct_dice,
+        "full_res_tiled_dice": mean_tiled_dice
     }
-    print(f"  Direct Resize Uncropped Mask mAP50: {res_direct.seg.map50:.4f}")
+    
+    print(f"Results for {name} :")
+    print(f"  Direct Resize Mask mAP50    : {direct_mAP50:.4f}")
+    print(f"  Direct Resize Mask mAP50-95 : {direct_mAP50_95:.4f}")
+    print(f"  Full-Res Direct Dice        : {mean_direct_dice:.4f}")
+    print(f"  Full-Res Tiled Dice         : {mean_tiled_dice:.4f}")
 
 out_path = Path("/kaggle/working/results/ood_eval_summary.json")
 out_path.parent.mkdir(parents=True, exist_ok=True)
 with open(out_path, "w") as f:
     json.dump(eval_summary, f, indent=2)
-print(f"Saved summary to {out_path}")
+print(f"\\nSaved evaluation summary to {out_path}")
 """)
     ]
     return make_nb(cells)
