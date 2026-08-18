@@ -131,19 +131,35 @@ Runs SAM2 against the mosaic composites from notebook 01 (up to 1920x720, i.e. g
 import os, shutil
 from pathlib import Path
 
-nb01_out = None
-for root, dirs, files in os.walk("/kaggle/input"):
-    if "crack500_ood_mined" in dirs:
-        nb01_out = Path(root) / "crack500_ood_mined"
-        break
-assert nb01_out is not None, "Attach notebook 01's output before running this notebook."
-print(f"[Link] Found notebook 01 output at {nb01_out}")
+# Search for mosaic_images and mosaic_masks anywhere under /kaggle/input
+mosaic_img_src = None
+mosaic_mask_src = None
 
-dest = Path("data/datasets/crack500_ood_mined")
-dest.parent.mkdir(parents=True, exist_ok=True)
-if os.path.lexists(dest):
-    os.unlink(dest) if os.path.islink(dest) else shutil.rmtree(dest)
-os.symlink(nb01_out, dest)
+for root, dirs, files in os.walk("/kaggle/input"):
+    if "mosaic_images" in dirs:
+        mosaic_img_src = Path(root) / "mosaic_images"
+    if "mosaic_masks" in dirs:
+        mosaic_mask_src = Path(root) / "mosaic_masks"
+
+assert mosaic_img_src is not None and mosaic_mask_src is not None, (
+    "Could not find 'mosaic_images' or 'mosaic_masks' in /kaggle/input! "
+    "Please attach Notebook 01's output before running."
+)
+
+dest_img = Path("data/datasets/crack500_ood_mined/mosaic_images")
+dest_mask = Path("data/datasets/crack500_ood_mined/mosaic_masks")
+dest_img.parent.mkdir(parents=True, exist_ok=True)
+
+if os.path.lexists(dest_img):
+    os.unlink(dest_img) if os.path.islink(dest_img) else shutil.rmtree(dest_img)
+os.symlink(mosaic_img_src, dest_img)
+
+if os.path.lexists(dest_mask):
+    os.unlink(dest_mask) if os.path.islink(dest_mask) else shutil.rmtree(dest_mask)
+os.symlink(mosaic_mask_src, dest_mask)
+
+img_count = len(list(dest_img.glob("*.jpg"))) + len(list(dest_img.glob("*.png")))
+print(f"[Link] Successfully linked {img_count} mosaic images from {mosaic_img_src} -> {dest_img}")
 
 # Original box-prompt teacher logits, if attached, get merged into the same output dir
 input_dir = Path("/kaggle/input/distill_datasetforme")
@@ -162,18 +178,28 @@ for root, dirs, files in os.walk(str(input_dir)):
 """),
         make_cell("code", f"%%writefile scripts/generate_teacher_logits.py\n{generate_teacher_logits_code}"),
         make_cell("code", """# -- Generate native-scale logits for the mosaic composites --
+import subprocess, sys
+from pathlib import Path
+
 ckpt_file = Path("checkpoints/sam2_hiera_large.pt")
 ckpt_file.parent.mkdir(parents=True, exist_ok=True)
 if not ckpt_file.exists():
     !wget -q https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt -O {ckpt_file}
-!pip install -q SAM-2 || pip install -q git+https://github.com/facebookresearch/segment-anything-2.git
+!pip install -q git+https://github.com/facebookresearch/segment-anything-2.git || pip install -q SAM-2
 
-!python scripts/generate_teacher_logits.py \\
-    --img-dir data/datasets/crack500_ood_mined/mosaic_images \\
-    --mask-dir data/datasets/crack500_ood_mined/mosaic_masks \\
-    --prefix crack500_ \\
-    --logits-dir data/teacher_logits_box \\
-    --resume
+cmd = [
+    sys.executable, "scripts/generate_teacher_logits.py",
+    "--img-dir", "data/datasets/crack500_ood_mined/mosaic_images",
+    "--mask-dir", "data/datasets/crack500_ood_mined/mosaic_masks",
+    "--prefix", "crack500_",
+    "--logits-dir", "data/teacher_logits_box",
+    "--sam-ckpt", str(ckpt_file),
+    "--resume"
+]
+print("Running command:", " ".join(cmd))
+res = subprocess.run(cmd)
+if res.returncode != 0:
+    raise RuntimeError(f"generate_teacher_logits.py failed with exit code {res.returncode}")
 
 n = len(list(Path("data/teacher_logits_box").glob("*_mosaic_logits.npy")))
 print(f"[Verify] {n} native-scale mosaic teacher logit files written.")
@@ -233,23 +259,26 @@ Same loss recipe as `final_notebooks/10_run_layerkd_dilated_hires` (Neck CWD lay
 import os, shutil
 from pathlib import Path
 
-def find_and_link(marker_dir_name, dest_path):
+def find_and_link(marker_dir_names, dest_path):
+    if isinstance(marker_dir_names, str):
+        marker_dir_names = [marker_dir_names]
     for root, dirs, files in os.walk("/kaggle/input"):
-        if marker_dir_name in dirs:
-            src = Path(root) / marker_dir_name
-            dest = Path(dest_path)
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            if os.path.lexists(dest):
-                os.unlink(dest) if os.path.islink(dest) else shutil.rmtree(dest)
-            os.symlink(src, dest)
-            print(f"[Link] {src} -> {dest}")
-            return True
+        for m in marker_dir_names:
+            if m in dirs:
+                src = Path(root) / m
+                dest = Path(dest_path)
+                dest.parent.mkdir(parents=True, exist_ok=True)
+                if os.path.lexists(dest):
+                    os.unlink(dest) if os.path.islink(dest) else shutil.rmtree(dest)
+                os.symlink(src, dest)
+                print(f"[Link] {src} -> {dest}")
+                return True
     return False
 
 ok1 = find_and_link("crack500_yolo_augmented", "data/datasets/crack500_yolo_augmented")
 assert ok1, "Attach notebook 01's output (crack500_yolo_augmented) before running."
 
-ok2 = find_and_link("teacher_logits_box", "data/teacher_logits_box")
+ok2 = find_and_link(["teacher_logits_box", "teacher_logits"], "data/teacher_logits_box")
 assert ok2, "Attach notebook 02's output (data/teacher_logits_box with mosaic logits merged) before running."
 
 # Uncropped OOD val set, from the raw dataset attachment (for post-training validation)

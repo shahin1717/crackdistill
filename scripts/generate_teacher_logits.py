@@ -72,6 +72,10 @@ def main():
                         help="Override output logits directory")
     parser.add_argument("--dataset", type=str, default=None,
                         help="Path to YOLO dataset or raw dataset directory")
+    parser.add_argument("--sam-ckpt", type=str, default=str(SAM2_CKPT),
+                        help="Path to SAM 2 checkpoint file")
+    parser.add_argument("--sam-cfg", type=str, default=SAM2_CFG,
+                        help="SAM 2 model config name or path")
     args = parser.parse_args()
 
     if args.dataset and not args.img_dir:
@@ -150,13 +154,54 @@ def main():
         return
 
     # ── Load SAM 2 ───────────────────────────────────────────
-    print(f"Loading SAM 2 from {SAM2_CKPT}...")
-    from sam2.build_sam import build_sam2
-    from sam2.sam2_image_predictor import SAM2ImagePredictor
+    ckpt_path = Path(args.sam_ckpt)
+    if not ckpt_path.exists():
+        # Search alternate candidate checkpoint locations
+        for cand in [ROOT / "checkpoints/sam2.1_hiera_large.pt", ROOT / "checkpoints/sam2_hiera_large.pt"]:
+            if cand.exists():
+                ckpt_path = cand
+                break
+    print(f"Loading SAM 2 from {ckpt_path}...")
+    predictor = None
+    device = "cuda" if torch.cuda.is_available() else "cpu"
 
-    model     = build_sam2(SAM2_CFG, str(SAM2_CKPT), device="cuda")
-    predictor = SAM2ImagePredictor(model)
-    print("SAM 2 loaded ✓\n")
+    # Strategy A: build_sam2 with candidate Hydra config paths
+    try:
+        from sam2.build_sam import build_sam2
+        from sam2.sam2_image_predictor import SAM2ImagePredictor
+
+        cfg_candidates = [
+            args.sam_cfg,
+            "sam2.1/sam2.1_hiera_l.yaml",
+            "configs/sam2.1/sam2.1_hiera_l.yaml",
+            "sam2/configs/sam2.1/sam2.1_hiera_l.yaml",
+            "sam2_hiera_l.yaml",
+            "configs/sam2/sam2_hiera_l.yaml"
+        ]
+        if ckpt_path.exists():
+            for cfg in cfg_candidates:
+                try:
+                    model = build_sam2(cfg, str(ckpt_path), device=device)
+                    predictor = SAM2ImagePredictor(model)
+                    print(f"SAM 2 loaded successfully via build_sam2 (config: {cfg}) on {device} ✓\n")
+                    break
+                except Exception:
+                    continue
+    except Exception as e:
+        print(f"[SAM2 Init Warning] build_sam2 failed: {e}")
+
+    # Strategy B: SAM2ImagePredictor from HuggingFace
+    if predictor is None:
+        try:
+            from sam2.sam2_image_predictor import SAM2ImagePredictor
+            print("Attempting to load SAM 2 from HuggingFace Hub...")
+            predictor = SAM2ImagePredictor.from_pretrained("facebook/sam2.1-hiera-large", device=device)
+            print(f"SAM 2 loaded from HuggingFace on {device} ✓\n")
+        except Exception as e:
+            print(f"[SAM2 Init Warning] HuggingFace load failed: {e}")
+
+    if predictor is None:
+        raise RuntimeError("FATAL: Could not initialize SAM 2! Check torch, cuda, checkpoint, and sam2 installation.")
 
     for d in active_datasets:
         img_dir = d["img_dir"]
