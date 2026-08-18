@@ -76,13 +76,15 @@ The locked **no-KD** baselines against which all gains are measured:
 
 | Notebook | Recipe | Direct Dice | Tiled Dice | Gain |
 |:---|:---|:---:|:---:|:---:|
-| `01_seed42` | Locked Baseline | 0.1409 | 0.2414 | **+71.3%** |
-| `03_dilated` | Foreground-Dilated KL | 0.1722 | 0.2612 | +51.7% |
-| `04_affinity` | Spatial Pixel Affinity KD | 0.1599 | **0.2683** ⭐ | **+67.8%** |
+| `06_layerkd` | Neck Multi-Scale LayerKD | **0.1621** | **0.2747** ⭐ | **+69.5% (👑 #1 Deployment Candidate)** |
+| `09_focal` | Focal Mask-KL ($\gamma=2.0$) | 0.1445 | 0.2671 | +84.8% |
+| `09_combined` | Combined Affinity + Dilated KD | 0.1546 | 0.2630 | +70.1% |
 | `05_multiscale` | Multi-Scale 512×512 | 0.1570 | 0.2625 | +67.2% |
-| `06_layerkd` | Neck LayerKD | 0.1418 | 0.2600 | **+83.4%** |
+| `03_dilated` | Foreground-Dilated KL | **0.1722** ⭐ | 0.2612 | +51.7% |
+| `04_affinity` | Spatial Pixel Affinity KD | 0.1505 | 0.2594 | +72.4% |
+| `01_seed42` | Locked Baseline | 0.1409 | 0.2414 | **+71.3%** |
 
-> **Key finding:** Tiled inference delivers **+52% to +83% Dice improvement** over direct resizing across ALL models — zero retraining required.
+> **Key finding:** Every KD variant outperforms the baseline under tiled sliding-window inference, with **`06_layerkd` achieving the peak 0.2747 Tiled Dice** (+69.5% over direct resize). Tiling reliably recovers resolution loss across ALL models without retraining.
 
 ---
 
@@ -138,12 +140,12 @@ KD models outperform baselines on **zero-shot cross-dataset transfer**:
 | **Best In-Domain Accuracy & Box mAP** | `05_multiscale` (512×512 Alignment) | **0.5485 Mask mAP50 / 0.6001 Box mAP50** |
 | **Best OOD Generalization (mAP-based)** | `03_dilated` (Foreground-Dilated KL) | **0.1007 OOD Mask mAP50** (+18.7% vs baseline) |
 | **Best OOD Fine-Grained Precision** | `06_layerkd` (Neck CWD LayerKD) | **0.0944 OOD mAP50 / 0.0252 OOD mAP50-95** |
-| **Best OOD Full-Resolution Deployment (Dice)** | `04_affinity` | **0.2683 Tiled Dice** — highest of all models |
+| **Best OOD Full-Resolution Deployment (Dice)** | `06_layerkd` (Neck CWD LayerKD) | **0.2747 Tiled Dice** — highest across all 7 models |
 | **Best Edge Speed** | All (same architecture) | **107.8 FPS / 9.27 ms** on T4 |
 
 ### 🏆 Paper Primary Result Narrative
 
-The **Multi-Scale 512×512 Alignment variant** (`05_multiscale`) achieves peak in-domain detection and segmentation accuracy at **Mask mAP50 = 0.5485** and **Box mAP50 = 0.6001**, outperforming the standard baseline across all metrics. For robust generalization on out-of-distribution uncropped road photos, the **Foreground-Dilated Mask-KL variant** (`03_dilated`) establishes the benchmark champion with **OOD Mask mAP50 = 0.1007** (+18.7% relative gain over baseline), while the **Multi-Scale Neck LayerKD variant** (`06_layerkd`) delivers the highest fine-grained localization precision at **OOD mAP50-95 = 0.0252**. When deployed on full-resolution uncropped (2000×1500) road imagery using tiled sliding-window inference (512×512 native patches), models achieve up to **0.2683 Dice score** — an improvement of **+52% to +83%** over direct image resizing without retraining. All variants operate at **107.8 FPS with 9.27 ms latency** on a T4 GPU (2.84M parameters, 10.2 GFLOPs, 6.2 MB checkpoint), with **zero SAM 2 runtime dependency**.
+The **Multi-Scale 512×512 Alignment variant** (`05_multiscale`) achieves peak in-domain detection and segmentation accuracy at **Mask mAP50 = 0.5485** and **Box mAP50 = 0.6001**, outperforming the standard baseline across all metrics. For robust generalization on out-of-distribution uncropped road photos, the **Foreground-Dilated Mask-KL variant** (`03_dilated`) establishes the benchmark champion with **OOD Mask mAP50 = 0.1007** (+18.7% relative gain over baseline), while the **Multi-Scale Neck LayerKD variant** (`06_layerkd`) delivers the highest fine-grained localization precision at **OOD mAP50-95 = 0.0252** and the highest full-resolution deployment accuracy at **0.2747 Tiled Dice**. When deployed on full-resolution uncropped (2000×1500) road imagery using tiled sliding-window inference (512×512 native patches), models achieve a **+52% to +85% Dice boost** over direct image resizing without retraining. All variants operate at **107.8 FPS with 9.27 ms latency** on a T4 GPU (2.84M parameters, 10.2 GFLOPs, 6.2 MB checkpoint), with **zero SAM 2 runtime dependency**.
 
 ---
 
