@@ -622,6 +622,41 @@ def main():
         json.dump(nb6, f, indent=1, ensure_ascii=False)
     print("✓ Created final_notebooks/06_run_multiscale_layer_kd.ipynb")
 
+    # 10. Ultimate OOD Candidate: High-Resolution (768px) Neck LayerKD + Foreground-Dilated Mask-KL
+    cfg_layerkd_dilated_hires = {
+        "distillation.enabled": True,
+        "distillation.temperature": 3.7769,
+        "distillation.progressive.enabled": False,
+        "distillation.losses.task.weight": 1.0,
+        "distillation.losses.mask_kd.enabled": True,
+        "distillation.losses.mask_kd.weight": 0.9612,
+        "distillation.losses.mask_kd.focused": True,
+        "distillation.losses.mask_kd.high_res": False,
+        "distillation.losses.affinity.enabled": False,
+        "distillation.losses.feature.enabled": True,
+        "distillation.losses.feature.method": "cwd",
+        "distillation.losses.feature.weight": 0.25,
+        "distillation.losses.feature.temperature": 4.0,
+        "distillation.losses.feature.layers": [12, 15, 18],
+        "distillation.losses.boundary.enabled": False,
+        "student.imgsz": 768,
+        "data.image_size": 768,
+        "data.batch_size": 8,
+        "train.lr": 0.001,
+        "train.epochs": 150,
+        "train.amp": False
+    }
+    nb10 = generate_training_notebook(
+        "exp_hires_layerkd_dilated_768_T3.7769_W0.9612",
+        "Ultimate OOD Candidate: High-Resolution (768px) Neck LayerKD + Foreground-Dilated Mask-KL",
+        "Fuses the #1 feature-level teacher (CWD on PANet layers 12, 15, 18) with the #1 mask-level background suppressor (8px context band) trained at 768x768 to prevent sub-pixel hairline crack collapse on uncropped pavement imagery.",
+        cfg_layerkd_dilated_hires,
+        seed=42
+    )
+    with open(final_dir / "10_run_layerkd_dilated_hires.ipynb", "w") as f:
+        json.dump(nb10, f, indent=1, ensure_ascii=False)
+    print("✓ Created final_notebooks/10_run_layerkd_dilated_hires.ipynb")
+
     # 7. OOD & Tiled Inference Notebook
     nb7 = generate_ood_tiled_eval_notebook()
     with open(final_dir / "07_eval_ood_and_tiled_inference.ipynb", "w") as f:
@@ -651,8 +686,11 @@ This folder contains the complete, self-contained suite of Kaggle notebooks cove
 | **`04_run_pixel_affinity_kd.ipynb`** | **Research Variant 2 (Spatial Pixel Affinity)**: Captures topological crack continuity via 4-directional spatial difference matching. | ~2.5–3.0 hrs | `results/exp_pixel_affinity_kd_T3.7769_W0.9612_seed42_150ep.json` |
 | **`05_run_multiscale_mask_kd.ipynb`** | **Research Variant 3 (512x512 High-Res Matching)**: Full $512 \\\\times 512$ sub-pixel logit alignment. | ~2.5–3.0 hrs | `results/exp_multiscale_512_mask_kd_T3.7769_W0.9612_seed42_150ep.json` |
 | **`06_run_multiscale_layer_kd.ipynb`** | **Research Variant 4 (Multi-Scale Neck LayerKD)**: Intermediate Channel-Wise Distillation (CWD) on PANet Neck layers (12, 15, 18). | ~2.8–3.2 hrs | `results/exp_multiscale_layer_cwd_kd_T3.7769_W0.9612_seed42_150ep.json` |
-| **`07_eval_ood_and_tiled_inference.ipynb`** | **OOD & Tiled Inference Engine**: Evaluates checkpoints on uncropped images with direct resizing vs tiled sliding window ($512 \\\\times 512$ native patches). | ~5–10 mins | `results/ood_eval_summary.json` |
+| **`07_eval_ood_and_tiled_inference.ipynb`** | **OOD & Tiled Inference Engine**: Evaluates checkpoints on uncropped images with direct resizing vs Gaussian-weighted tiled sliding window ($512 \\\\times 512$ native patches). | ~5–10 mins | `results/ood_eval_summary.json` |
 | **`08_benchmark_speed_and_profile.ipynb`** | **Speed Benchmark**: Confirms 0% latency/parameter overhead (>100 FPS, 2.84M params, 10.2 GFLOPs). | ~2 mins | Latency & FPS Report |
+| **`09_run_combined_affinity_dilated_kd.ipynb`** | **Research Variant 5 (Combined Affinity + Dilated)**: Multi-loss combination. | ~2.8–3.2 hrs | `results/exp_combined_affinity_dilated_kd_T3.7769_W0.9612_seed42_150ep.json` |
+| **`09_run_focal_mask_kd.ipynb`** | **Research Variant 6 (Focal Mask-KL)**: Soft focal modulation ($\\\\gamma=2.0$). | ~2.5–3.0 hrs | `results/exp_focal_mask_kd_gamma2.0_T3.7769_W0.9612_seed42_150ep.json` |
+| **`10_run_layerkd_dilated_hires.ipynb`** | **Ultimate OOD Candidate (768px LayerKD + Dilated)**: Multi-scale Neck CWD + Foreground Dilated Mask-KL at $768 \\\\times 768$. | ~3.0–3.5 hrs | `results/exp_hires_layerkd_dilated_768_T3.7769_W0.9612.json` |
 
 ---
 
@@ -660,13 +698,8 @@ This folder contains the complete, self-contained suite of Kaggle notebooks cove
 
 | Notebook File | Required Kaggle Dataset | Required Model Checkpoint | Accelerator Setting | Internet | How to Run in Kaggle |
 | :--- | :--- | :--- | :---: | :---: | :--- |
-| **`01_run_mask_kd_production_seed42.ipynb`** | `distill_datasetforme` (Crack500 raw + teacher logits) | *None* (trains automatically from standard pre-trained YOLOv11) | **GPU T4 x2** or **P100** | **ON** | 1. Click **+ Add Data** $\\\\rightarrow$ attach `distill_datasetforme`<br>2. Click **Run All** |
-| **`02_run_mask_kd_production_seed123.ipynb`** | `distill_datasetforme` (Crack500 raw + teacher logits) | *None* (trains automatically from standard pre-trained YOLOv11) | **GPU T4 x2** or **P100** | **ON** | 1. Click **+ Add Data** $\\\\rightarrow$ attach `distill_datasetforme`<br>2. Click **Run All** |
-| **`03_run_foreground_dilated_kd.ipynb`** | `distill_datasetforme` (Crack500 raw + teacher logits) | *None* (trains automatically from standard pre-trained YOLOv11) | **GPU T4 x2** or **P100** | **ON** | 1. Click **+ Add Data** $\\\\rightarrow$ attach `distill_datasetforme`<br>2. Click **Run All** |
-| **`04_run_pixel_affinity_kd.ipynb`** | `distill_datasetforme` (Crack500 raw + teacher logits) | *None* (trains automatically from standard pre-trained YOLOv11) | **GPU T4 x2** or **P100** | **ON** | 1. Click **+ Add Data** $\\\\rightarrow$ attach `distill_datasetforme`<br>2. Click **Run All** |
-| **`05_run_multiscale_mask_kd.ipynb`** | `distill_datasetforme` (Crack500 raw + teacher logits) | *None* (trains automatically from standard pre-trained YOLOv11) | **GPU T4 x2** or **P100** | **ON** | 1. Click **+ Add Data** $\\\\rightarrow$ attach `distill_datasetforme`<br>2. Click **Run All** |
-| **`06_run_multiscale_layer_kd.ipynb`** | `distill_datasetforme` (Crack500 raw + teacher logits) | *None* (trains automatically from standard pre-trained YOLOv11) | **GPU T4 x2** or **P100** | **ON** | 1. Click **+ Add Data** $\\\\rightarrow$ attach `distill_datasetforme`<br>2. Click **Run All** |
-| **`07_eval_ood_and_tiled_inference.ipynb`** | `distill_datasetforme` (contains uncropped `valdata`/`testdata`) | **Attach Notebook 01-06 Output** (`best.pt`) via Kaggle "+ Add Data" $\\\\rightarrow$ "Your Work / Notebook Output Files" | **GPU** (any) or **CPU** | **ON** | 1. Attach dataset + output `best.pt`<br>2. Click **Run All** |
+| **`01` through `06`, `09`, `10`** | `distill_datasetforme` (Crack500 raw + teacher logits) | *None* (trains automatically from standard pre-trained YOLOv11) | **GPU T4 x2** or **P100** | **ON** | 1. Click **+ Add Data** $\\\\rightarrow$ attach `distill_datasetforme`<br>2. Click **Run All** |
+| **`07_eval_ood_and_tiled_inference.ipynb`** | `distill_datasetforme` (contains uncropped `valdata`/`testdata`) | **Attach Notebook 01-10 Output** (`best.pt`) via Kaggle "+ Add Data" $\\\\rightarrow$ "Your Work / Notebook Output Files" | **GPU** (any) or **CPU** | **ON** | 1. Attach dataset + output `best.pt`<br>2. Click **Run All** |
 | **`08_benchmark_speed_and_profile.ipynb`** | **None!** (benchmarks with synthetic tensors) | **None!** (auto-downloads `yolo11n-seg.pt` or uses trained `best.pt`) | **GPU** (T4 / P100) or **CPU** | **ON** | 1. No dataset needed<br>2. Click **Run All** |
 
 ---
@@ -685,3 +718,4 @@ This folder contains the complete, self-contained suite of Kaggle notebooks cove
 
 if __name__ == "__main__":
     main()
+
