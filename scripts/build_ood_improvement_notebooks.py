@@ -127,14 +127,19 @@ Runs SAM2 against the mosaic composites from notebook 01 (up to 1920x720, i.e. g
 !mkdir -p scripts checkpoints data/teacher_logits_box data/datasets configs utils distillation
 !pip install -q ultralytics opencv-python numpy
 """),
-        make_cell("code", """# -- Link notebook 01 output + original teacher logits --
+        make_cell("code", """# -- Link notebook 01 output (mosaics only) --
+# IMPORTANT: do NOT pre-populate data/teacher_logits_box here. generate_teacher_logits.py
+# has Kaggle-specific logic that redirects writes to /tmp/teacher_logits_box and then
+# self-heals by symlinking data/teacher_logits_box -> /tmp/teacher_logits_box -- but ONLY
+# if data/teacher_logits_box is empty/nonexistent at that moment. Populating it first (as
+# an earlier version of this notebook did) silently breaks that symlink and strands the
+# new mosaic logits in /tmp, invisible to everything downstream. Merge the original
+# crop-scale logits in AFTER generation instead (next cell).
 import os, shutil
 from pathlib import Path
 
-# Search for mosaic_images and mosaic_masks anywhere under /kaggle/input
 mosaic_img_src = None
 mosaic_mask_src = None
-
 for root, dirs, files in os.walk("/kaggle/input"):
     if "mosaic_images" in dirs:
         mosaic_img_src = Path(root) / "mosaic_images"
@@ -160,24 +165,11 @@ os.symlink(mosaic_mask_src, dest_mask)
 
 img_count = len(list(dest_img.glob("*.jpg"))) + len(list(dest_img.glob("*.png")))
 print(f"[Link] Successfully linked {img_count} mosaic images from {mosaic_img_src} -> {dest_img}")
-
-# Original box-prompt teacher logits, if attached, get merged into the same output dir
-input_dir = Path("/kaggle/input/distill_datasetforme")
-if not input_dir.exists():
-    input_dir = Path("/kaggle/input")
-Path("data/teacher_logits_box").mkdir(parents=True, exist_ok=True)
-for root, dirs, files in os.walk(str(input_dir)):
-    if "teacher_logits_box" in dirs or "teacher_logits" in dirs:
-        src = Path(root) / ("teacher_logits_box" if "teacher_logits_box" in dirs else "teacher_logits")
-        for f in src.glob("*.npy"):
-            link = Path("data/teacher_logits_box") / f.name
-            if not link.exists():
-                os.symlink(f, link)
-        print(f"[Link] Merged {len(list(src.glob('*.npy')))} existing crop-scale logits from {src}")
-        break
 """),
         make_cell("code", f"%%writefile scripts/generate_teacher_logits.py\n{generate_teacher_logits_code}"),
         make_cell("code", """# -- Generate native-scale logits for the mosaic composites --
+# Runs BEFORE the original-logits merge (see cell above) so the script's own Kaggle
+# /tmp-redirect + symlink-back logic fires correctly against an empty target dir.
 import subprocess, sys
 from pathlib import Path
 
@@ -201,11 +193,59 @@ res = subprocess.run(cmd)
 if res.returncode != 0:
     raise RuntimeError(f"generate_teacher_logits.py failed with exit code {res.returncode}")
 
-n = len(list(Path("data/teacher_logits_box").glob("*_mosaic_logits.npy")))
-print(f"[Verify] {n} native-scale mosaic teacher logit files written.")
-assert n > 0, "0 mosaic logits generated — check mosaic_images/mosaic_masks from notebook 01."
+# Check both the expected path AND the Kaggle /tmp fallback -- if the symlink-back somehow
+# still didn't fire, this still finds the real files instead of silently reporting 0.
+def count_mosaic_logits():
+    found = {}
+    for c in [Path("data/teacher_logits_box"), Path("/tmp/teacher_logits_box")]:
+        if c.exists():
+            found[str(c)] = len(list(c.glob("*_mosaic_logits.npy")))
+    return found
+
+counts = count_mosaic_logits()
+print(f"[Verify] Mosaic logit counts by location: {counts}")
+n = max(counts.values(), default=0)
+assert n > 0, f"0 mosaic logits generated anywhere (checked {list(counts.keys())}) — check the generation log above for per-image errors."
+
+# If the real files ended up only in /tmp (symlink-back didn't fire for some other reason),
+# link them into data/teacher_logits_box explicitly so downstream steps see them.
+best_loc = max(counts, key=counts.get)
+if best_loc != "data/teacher_logits_box" and counts[best_loc] > counts.get("data/teacher_logits_box", 0):
+    dest = Path("data/teacher_logits_box")
+    dest.mkdir(parents=True, exist_ok=True)
+    for f in Path(best_loc).glob("*_mosaic_logits.npy"):
+        link = dest / f.name
+        if not link.exists():
+            os.symlink(f.resolve(), link)
+    print(f"[Fix] Linked {counts[best_loc]} files from {best_loc} into data/teacher_logits_box")
 """),
-        make_cell("code", """print("Save this notebook's version — 03 needs BOTH data/teacher_logits_box (crop-scale + mosaic-scale merged) "
+        make_cell("code", """# -- Merge in the ORIGINAL crop-scale teacher logits (after generation, not before) --
+import os
+from pathlib import Path
+
+input_dir = Path("/kaggle/input/distill_datasetforme")
+if not input_dir.exists():
+    input_dir = Path("/kaggle/input")
+
+dest = Path("data/teacher_logits_box")
+dest.mkdir(parents=True, exist_ok=True)
+for root, dirs, files in os.walk(str(input_dir)):
+    if "teacher_logits_box" in dirs or "teacher_logits" in dirs:
+        src = Path(root) / ("teacher_logits_box" if "teacher_logits_box" in dirs else "teacher_logits")
+        n = 0
+        for f in src.glob("*.npy"):
+            link = dest / f.name
+            if not link.exists():
+                os.symlink(f, link)
+                n += 1
+        print(f"[Link] Merged {n} existing crop-scale logits from {src} -> {dest}")
+        break
+
+total = len(list(dest.glob("*_logits.npy")))
+mosaic_total = len(list(dest.glob("*_mosaic_logits.npy")))
+print(f"[Final] {dest}: {total} total logit files ({mosaic_total} native-scale mosaic + {total - mosaic_total} crop-scale)")
+"""),
+        make_cell("code", """print("Save this notebook's version — 03 needs data/teacher_logits_box (crop-scale + mosaic-scale merged) "
       "and notebook 01's crack500_yolo_augmented attached.")"""),
     ]
     return make_nb(cells)
