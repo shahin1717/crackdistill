@@ -604,6 +604,9 @@ class KDSegmentationTrainer(SegmentationTrainer):
             loss_boundary = torch.tensor(0.0, device=self.device)
             loss_boundary_count = 0
 
+            loss_tversky = torch.tensor(0.0, device=self.device)
+            loss_tversky_count = 0
+
             # 1. Compute L_mask and L_boundary (Per-instance matched)
             for i, img_path in enumerate(self._current_paths):
                 stem = Path(img_path).stem
@@ -624,20 +627,25 @@ class KDSegmentationTrainer(SegmentationTrainer):
                     # Extract corresponding SAM teacher logits: (N_pos, 256, 256)
                     sam_logits_matched = sam_logits[mask_idx]
                     
-                    # Target resolution (default 256x256, or 512x512 if high_res enabled)
-                    target_res = 512 if getattr(self.kd_cfg.losses.mask_kd, "high_res", False) else 256
+                    # Target resolution (default 256x256, or 512x512 if high_res, or native teacher res if native_res enabled)
+                    if getattr(self.kd_cfg.losses.mask_kd, "native_res", False) or getattr(self.kd_cfg.losses.mask_kd, "upsample_student", False):
+                        target_h, target_w = sam_logits_matched.shape[-2:]
+                    elif getattr(self.kd_cfg.losses.mask_kd, "high_res", False):
+                        target_h, target_w = 512, 512
+                    else:
+                        target_h, target_w = 256, 256
                     
                     # Resize both to target resolution
                     student_mask_logits_resized = F.interpolate(
                         pred_mask_logits.unsqueeze(1),
-                        size=(target_res, target_res),
+                        size=(target_h, target_w),
                         mode="bilinear",
                         align_corners=False
                     ).squeeze(1)
                     
                     sam_logits_matched_resized = F.interpolate(
                         sam_logits_matched.unsqueeze(1),
-                        size=(target_res, target_res),
+                        size=(target_h, target_w),
                         mode="bilinear",
                         align_corners=False
                     ).squeeze(1)
@@ -693,6 +701,20 @@ class KDSegmentationTrainer(SegmentationTrainer):
                         loss_boundary = loss_boundary + (bce * bw).mean()
                         loss_boundary_count += 1
 
+                    # L_tversky (Asymmetric Tversky loss targeting thin-crack continuity)
+                    tversky_cfg = getattr(self.kd_cfg.losses, "tversky", None)
+                    if tversky_cfg and getattr(tversky_cfg, "enabled", False):
+                        p_stu = torch.sigmoid(stu_clamped)
+                        alpha = float(getattr(tversky_cfg, "alpha", 0.30))
+                        beta = float(getattr(tversky_cfg, "beta", 0.70))
+                        eps = 1.0
+                        tp = (p_stu * q).sum(dim=(-1, -2))
+                        fp = (p_stu * (1.0 - q)).sum(dim=(-1, -2))
+                        fn = ((1.0 - p_stu) * q).sum(dim=(-1, -2))
+                        tversky_idx = (tp + eps) / (tp + alpha * fp + beta * fn + eps)
+                        loss_tversky = loss_tversky + (1.0 - tversky_idx).mean()
+                        loss_tversky_count += 1
+
             if self.kd_cfg.losses.mask_kd.enabled and loss_mask_kd_count > 0:
                 kd_losses["mask_kd"] = (loss_mask_kd / loss_mask_kd_count) * self.kd_cfg.losses.mask_kd.weight
 
@@ -702,6 +724,10 @@ class KDSegmentationTrainer(SegmentationTrainer):
                 
             if self.kd_cfg.losses.boundary.enabled and loss_boundary_count > 0:
                 kd_losses["boundary"] = (loss_boundary / loss_boundary_count) * self.kd_cfg.losses.boundary.weight
+
+            tversky_cfg = getattr(self.kd_cfg.losses, "tversky", None)
+            if tversky_cfg and getattr(tversky_cfg, "enabled", False) and loss_tversky_count > 0:
+                kd_losses["tversky"] = (loss_tversky / loss_tversky_count) * float(getattr(tversky_cfg, "weight", 1.0))
 
             # 2. Compute L_feature (Scale-matched alignment or CWD)
             if self.kd_cfg.losses.feature.enabled:

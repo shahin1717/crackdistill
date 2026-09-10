@@ -343,7 +343,30 @@ print("Gaussian-weighted tiled inference engine ready!")
 """),
 
         make_cell('code', """# ── Step 3: Discover Checkpoints & Run Cross-Evaluation ──
+from PIL import Image
+
+def get_exif_rotation(img_path: Path):
+    try:
+        with Image.open(img_path) as im:
+            exif = im.getexif()
+            if exif:
+                return exif.get(274)
+    except Exception:
+        pass
+    return None
+
+def rotate_mask_to_match_image(mask: np.ndarray, exif_orientation: int) -> np.ndarray:
+    if exif_orientation == 6:
+        return cv2.rotate(mask, cv2.ROTATE_90_CLOCKWISE)
+    elif exif_orientation == 8:
+        return cv2.rotate(mask, cv2.ROTATE_90_COUNTERCLOCKWISE)
+    elif exif_orientation == 3:
+        return cv2.rotate(mask, cv2.ROTATE_180)
+    return mask
+
 def compute_dice(pred_mask, gt_mask):
+    if pred_mask.shape != gt_mask.shape:
+        gt_mask = cv2.resize(gt_mask.astype(np.uint8), (pred_mask.shape[1], pred_mask.shape[0]), interpolation=cv2.INTER_NEAREST)
     intersection = np.logical_and(pred_mask, gt_mask).sum()
     total = pred_mask.sum() + gt_mask.sum()
     if total == 0:
@@ -392,6 +415,13 @@ for ckpt in ckpts:
         if gt_mask_path.exists():
             gt_mask = cv2.imread(str(gt_mask_path), cv2.IMREAD_GRAYSCALE)
             if gt_mask is not None:
+                exif_rot = get_exif_rotation(img_p)
+                if exif_rot:
+                    gt_mask = rotate_mask_to_match_image(gt_mask, exif_rot)
+                if gt_mask.shape[:2] == (w, h):
+                    gt_mask = cv2.rotate(gt_mask, cv2.ROTATE_90_CLOCKWISE)
+                if gt_mask.shape[:2] != (h, w):
+                    gt_mask = cv2.resize(gt_mask, (w, h), interpolation=cv2.INTER_NEAREST)
                 gt_binary = (gt_mask > 127).astype(np.uint8)
                 
                 # A. Direct resize prediction
