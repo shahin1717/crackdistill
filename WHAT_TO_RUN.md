@@ -1,57 +1,75 @@
 # 🚀 CrackDistill Execution Brief: What to Run & Required Inputs
 
----
-
-## ⚡ 1. Immediate Next Step (Evaluate Mosaic Checkpoint)
-
-| Notebook | Purpose | GPU? | Kaggle "+ Add Data" Inputs | Runtime |
-|---|---|:---:|---|:---:|
-| **`OODimprovements/04_eval_ood_and_tiled_inference.ipynb`** | Evaluates the trained Mosaic checkpoint on full-resolution ($2000 \times 1500$) imagery using the 2D Gaussian Tiled Engine. | GPU / CPU | 1. `distill_datasetforme`<br>2. Output of `03_run_mosaic_native_kd` (`best.pt`) | ~5–10 mins |
-
----
-
-## 🔬 2. Main Production & Research Notebooks (`final_notebooks/`)
-
-All training notebooks auto-download `yolo11n-seg.pt` — **no prior checkpoint needed**.
-
-| Notebook | Recipe & Target Metric | Accelerator | Attached Inputs |
-|---|---|:---:|---|
-| **`01_run_mask_kd_production_seed42.ipynb`** | **Locked Production Baseline**: Uniform Mask-KL ($\tau=3.78, \alpha=0.96$). | GPU T4 / P100 | `distill_datasetforme` |
-| **`03_run_foreground_dilated_kd.ipynb`** | **#1 Best OOD Generalization**: Foreground-Dilated KL (**0.1007 mAP50**, +18.7%). | GPU T4 / P100 | `distill_datasetforme` |
-| **`04_run_pixel_affinity_kd.ipynb`** | **#1 Best In-Domain Segmentation**: Spatial Pixel Affinity (**0.5569 mAP50**, +3.1%). | GPU T4 / P100 | `distill_datasetforme` |
-| **`05_run_multiscale_mask_kd.ipynb`** | **#1 Best Bounding Box Accuracy**: 512x512 Logit Matching (**0.6001 Box mAP50**). | GPU T4 / P100 | `distill_datasetforme` |
-| **`06_run_multiscale_layer_kd.ipynb`** | **#1 Best Fine-Grained & Tiled Dice**: Neck CWD on Layers 12, 15, 18 (**0.2747 Tiled Dice**). | GPU T4 / P100 | `distill_datasetforme` |
-| **`07_eval_ood_and_tiled_inference.ipynb`** | Master evaluation on uncropped imagery with 2D Gaussian sliding window. | GPU / CPU | `distill_datasetforme` + `best.pt` from any training run |
-| **`08_benchmark_speed_and_profile.ipynb`** | Hardware latency & FPS verification (**107.8 FPS** on T4). | GPU T4 | *None* (runs synthetic profile) |
+> **Current State (as of September 10, 2026):** 
+> - Baseline & Research Notebooks 01–10 (`final_notebooks/`): **All executed & verified.**
+> - Mosaic Native Pipeline 01–04 (`OODimprovements/`): **Executed & verified** (All-time OOD champion: `0.1409` Mask mAP50, `0.1747` Box mAP50).
+> - Two-Stage Fine-Tuning (`05_run_twostage`): **Executed & verified** (`0.1130` direct OOD mAP in 50 epochs).
+> - Resolution-Preserving Mask-KL (`06_run_res_preserving`): **Executed & verified** (`0.2050` mAP50-95, `0.761/0.733` precision).
+> - **Active Target:** Run **`08_eval_multiscale_tta_sahi.ipynb`** with checkpoints from **05 & 06** to benchmark megapixel TTA Dice, and train **`07_run_asymmetric_tversky_kd.ipynb`**.
 
 ---
 
-## 🧩 3. Full Mosaic & Scale Pipeline (`OODimprovements/`)
+## ⚡ 1. Top Priorities: What to Run Right Now
 
-Chained pipeline that breaks the $640 \times 360$ crop ceiling using 250 stitched wide composites ($1920 \times 720$):
-
-```
-[01_mine_mosaics] ──> [02_generate_teacher] ──> [03_run_mosaic_kd] ──> [04_eval_ood]
-```
-
-| Step | Notebook | Inputs to Attach in Kaggle | Output Produced |
-|:---:|---|---|---|
-| **1** | `01_mine_mosaics_and_negatives.ipynb` *(CPU)* | `distill_datasetforme` | `crack500_yolo_augmented/` (2,156 images) |
-| **2** | `02_generate_native_teacher_logits.ipynb` *(GPU)* | `distill_datasetforme` + **Output of 01** | `teacher_logits_box/` (2,446 logits) |
-| **3** | `03_run_mosaic_native_kd.ipynb` *(GPU)* | **Output of 01** + **Output of 02** | `best.pt` (Epoch 150 student) |
-| **4** | `04_eval_ood_and_tiled_inference.ipynb` *(GPU)* | `distill_datasetforme` + **Output of 03** | Final OOD & Tiled Dice JSON |
+| Priority | Notebook | Purpose & Expected Gain | Hardware | Attached Kaggle Inputs | Runtime | Status |
+| :---: | :--- | :--- | :---: | :--- | :---: | :---: |
+| **P0 (Immediate)** | **`OODimprovements/08_eval_multiscale_tta_sahi.ipynb`** | **Instant Megapixel Benchmarking**: Cross-evaluates checkpoints from **05** and **06** on raw uncropped photos via 2D Gaussian apodization & Multi-Scale TTA ($640+768$). Zero retraining. | GPU or CPU | 1. `distill_datasetforme`<br>2. Output of `05_twostage` (`best.pt`)<br>3. Output of `06_res_preserving` (`best.pt`) | **~8–10 mins** | 🟢 **RUN NOW** |
+| **P1 (Next Training)** | **`OODimprovements/07_run_asymmetric_tversky_kd.ipynb`** | **Penalizes Broken Crack Branches**: Asymmetric Soft Tversky ($\beta=0.70$) + Neck CWD for continuous crack network topology. (150 epochs). | GPU T4 / P100 | 1. `distill_datasetforme`<br>2. Output of `01_mine_mosaics`<br>3. Output of `02_generate_teacher` | **~2.8 hrs** | 🟡 **NEXT RUN** |
+| **P2 (Completed)** | **`OODimprovements/05_run_twostage_mosaic_native_tune.ipynb`** | **Two-Stage Transfer**: Rapid 50-epoch fine-tuning at $\text{lr}_0=0.001$. Achieved `0.1130` direct OOD Mask mAP50. | GPU T4 | Output in `output_runned/` | **~1.1 hrs** | ✅ **VERIFIED** |
+| **P3 (Completed)** | **`OODimprovements/06_run_resolution_preserving_kd.ipynb`** | **Stops Thin-Crack Dilution**: Bilinearly upsamples student proto-mask before KL. Achieved `0.2050` mAP50-95 & `0.761` Box P. | GPU T4 | Output in `output_runned/` | **~5.2 hrs** | ✅ **VERIFIED** |
 
 ---
 
-## 🚫 4. What FAILED & Should NOT Be Re-Run
+## 📋 2. Step-by-Step Kaggle Run Instructions
 
-1. **`09_run_combined_affinity_dilated_kd.ipynb`** ❌: Mask mAP dropped to 0.0851 (Dilated alone is 0.1007). Dual output losses conflict with each other.
-2. **Raw Feature MSE / Boundary BCE** ❌: 79× ViT-vs-CNN capacity gap + 99% asphalt flooding degrades performance.
+### Option A: Run `08_eval_multiscale_tta_sahi.ipynb` (Instant Evaluation)
+1. Open Kaggle $\to$ **New Notebook** $\to$ Upload `OODimprovements/08_eval_multiscale_tta_sahi.ipynb`.
+2. Click **+ Add Data**:
+   - Attach dataset: `distill_datasetforme`.
+   - Attach checkpoint: Click **Your Work** $\to$ **Notebook Output Files** $\to$ select the output of `03_run_mosaic_native_kd` (or `final_notebooks/06_layerkd`).
+3. Settings:
+   - Accelerator: **GPU T4 x2** or **P100** (or CPU).
+   - Internet: **ON**.
+4. Click **Run All**.
+5. Output: `results/multiscale_tta_sahi_eval_summary.json` with Direct vs Tiled vs Multi-Scale TTA metrics.
 
 ---
 
-## 🔮 5. Next Planned Breakthroughs to Build
+### Option B: Run `05_run_twostage_mosaic_native_tune.ipynb` (50-Epoch Fine-Tuning)
+1. Open Kaggle $\to$ **New Notebook** $\to$ Upload `OODimprovements/05_run_twostage_mosaic_native_tune.ipynb`.
+2. Click **+ Add Data**:
+   - Attach `distill_datasetforme`.
+   - Attach Notebook 01 output: `01-mine-mosaics-and-negatives`.
+   - Attach Notebook 02 output: `02-generate-native-teacher-logits`.
+   - Attach Stage 1 checkpoint: Select output of `final_notebooks/04_run_pixel_affinity_kd` or `06_run_multiscale_layer_kd`.
+3. Settings:
+   - Accelerator: **GPU T4 x2** or **P100**.
+   - Internet: **ON**.
+4. Click **Run All**.
+5. Output: `best.pt` in `runs/segment/exp_twostage_mosaic_native_tune_seed42_50ep/weights/`.
 
-1. **Negative Tile Injection (P1)**: Add ~200 background-only asphalt photos (0 instances) to eliminate false positives on raw road scans.
-2. **SAM 2 / SAM 3 Multi-Prompt Ensemble (P2)**: Fuse **Box Prompts (0.6)** + **Skeleton Multi-Point Prompts (0.3)** + **Iterative Memory (0.1)** into a superior offline teacher logit tensor.
-3. **clDice Skeleton Loss (P3)**: Penalize broken topological crack connectivity directly.
+---
+
+### Option C: Run `06_run_resolution_preserving_kd.ipynb` (Resolution-Preserving Mask-KL)
+1. Open Kaggle $\to$ **New Notebook** $\to$ Upload `OODimprovements/06_run_resolution_preserving_kd.ipynb`.
+2. Click **+ Add Data**:
+   - Attach `distill_datasetforme`.
+   - Attach Notebook 01 output (`crack500_yolo_augmented`).
+   - Attach Notebook 02 output (`teacher_logits_box`).
+3. Settings:
+   - Accelerator: **GPU T4 x2** or **P100**.
+   - Internet: **ON**.
+4. Click **Run All** (150 epochs).
+
+---
+
+## 🚫 3. What Has Already Succeeded / Failed (Do Not Repeat)
+
+| Experiment / Component | Outcome | Reason / Status |
+| :--- | :---: | :--- |
+| **`OODimprovements/01` & `02`** | ✅ **Succeeded** | 250 composites stitched, native logits generated. |
+| **`OODimprovements/03` (Mosaic Native KD)** | ✅ **Succeeded** | SOTA `0.1409` Mask mAP50 (+66%), `0.1747` Box mAP50 (+106%). |
+| **`final_notebooks/01–10`** | ✅ **Succeeded** | Baseline, Dilated, Affinity, Multiscale, LayerKD all verified. |
+| **`09_run_combined_affinity_dilated`** | ❌ **Failed (mAP 0.0851)** | Dual mask losses collide. Do not stack Affinity with Dilated KL. |
+| **Intermediate Feature MSE (Raw)** | ❌ **Failed (-2.14% mAP)** | 79× ViT-CNN capacity gap over-constrains backbone. |
+| **Full SegHead Freeze (Crack500)** | ❌ **Failed** | Restricts multi-task head adaptation on large datasets. |
