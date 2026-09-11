@@ -1131,9 +1131,12 @@ repack_dir.mkdir(parents=True, exist_ok=True)
 if os.path.exists("/kaggle/input"):
     for root, dirs, files in os.walk("/kaggle/input"):
         if "data.pkl" in files:
-            folder_name = os.path.basename(root)
-            if folder_name in [".", ""]:
-                folder_name = os.path.basename(os.path.dirname(root))
+            parts = [p for p in Path(root).parts if p not in [".", ""]]
+            folder_name = Path(root).name
+            if folder_name in ["best", "weights", "model", "archive", "default", "1", ".", ""]:
+                skip_set = {"kaggle", "input", "models", "pytorch", "default", "1", "best", "weights", "model", "archive"}
+                meaningful = [p for p in parts if p not in skip_set]
+                folder_name = meaningful[-1] if meaningful else Path(root).parent.name
             repacked_path = repack_dir / f"{folder_name}.pt"
             print(f"  -> Detected unzipped PyTorch folder: {root}")
             print(f"  -> Repacking into valid PyTorch container: {repacked_path}...")
@@ -1149,19 +1152,37 @@ if os.path.exists("/kaggle/input"):
 # B. Scan checkpoints across repacked, input, working, and runs directories
 checkpoints = {}
 search_roots = ["/kaggle/working/repacked_ckpts", "/kaggle/input", "/kaggle/working", "runs"]
+stock_weights = {"yolo11n-seg.pt", "yolov8n-seg.pt", "yolo11s-seg.pt", "yolo11m-seg.pt"}
+
 for s_root in search_roots:
     if os.path.exists(s_root):
         for root, dirs, files in os.walk(s_root):
             for f in files:
                 if (f.endswith(".pt") or f.endswith(".pth")) and "sam" not in f.lower() and "hiera" not in f.lower():
+                    if f in stock_weights and "runs" not in root:
+                        continue
                     resolved = str(Path(os.path.join(root, f)).resolve())
-                    parent_tag = Path(root).name
-                    tag = f"{parent_tag}_{f}" if parent_tag not in ["working", "input", "weights", "repacked_ckpts"] else Path(f).stem
+                    p = Path(resolved)
+                    if p.parent.name == "weights":
+                        exp_name = p.parent.parent.name
+                        tag = f"{exp_name}_{p.stem}"
+                    elif p.parent.name == "repacked_ckpts":
+                        tag = p.stem
+                    else:
+                        parent_name = p.parent.name
+                        tag = f"{parent_name}_{p.stem}" if parent_name not in ["working", "input"] else p.stem
+                    
+                    base_tag = tag
+                    c_idx = 1
+                    while tag in checkpoints and checkpoints[tag] != resolved:
+                        tag = f"{base_tag}_{c_idx}"
+                        c_idx += 1
+
                     if tag not in checkpoints:
                         checkpoints[tag] = resolved
 
 if not checkpoints:
-    print("[Warning] No checkpoints found; downloading stock yolo11n-seg.pt as reference")
+    print("[Warning] No finetuned checkpoints found; downloading stock yolo11n-seg.pt as fallback")
     checkpoints["yolo11n-seg_baseline"] = "yolo11n-seg.pt"
 
 print(f"Discovered {len(checkpoints)} checkpoints to evaluate:")
