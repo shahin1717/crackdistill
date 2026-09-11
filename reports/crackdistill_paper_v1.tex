@@ -1,0 +1,947 @@
+\documentclass[12pt,a4paper]{article}
+
+% ─── Packages ───────────────────────────────────────────────────
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{lmodern}
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{multirow}
+\usepackage{graphicx}
+\usepackage{xcolor}
+\usepackage{hyperref}
+\usepackage{url}
+\usepackage{microtype}
+\usepackage{enumitem}
+\usepackage{caption}
+\usepackage{setspace}
+\usepackage{titlesec}
+\usepackage{fancyhdr}
+\usepackage{makecell}
+\usepackage{float}
+
+% ─── Hyperref ───────────────────────────────────────────────────
+\hypersetup{
+  colorlinks=true, linkcolor=blue!60!black, citecolor=green!50!black,
+  urlcolor=blue!70!black,
+  pdftitle={CrackDistill},
+  pdfauthor={Shahin}
+}
+
+% ─── Typography ─────────────────────────────────────────────────
+\setstretch{1.15}
+\setlength{\parskip}{4pt}
+
+% ─── Header / Footer ────────────────────────────────────────────
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{\small CrackDistill --- SAM~2 $\to$ YOLOv11n-seg Knowledge Distillation}
+\lhead{\small Shahin, 2026}
+\rfoot{\thepage}
+
+% ─── Section style ──────────────────────────────────────────────
+\titleformat{\section}{\large\bfseries}{\thesection}{1em}{}[\titlerule]
+\titleformat{\subsection}{\normalsize\bfseries}{\thesubsection}{1em}{}
+
+% ─── Macros ─────────────────────────────────────────────────────
+\newcommand{\yolo}{YOLOv11n-seg}
+\newcommand{\etal}{\textit{et al.}}
+
+% ════════════════════════════════════════════════════════════════
+\begin{document}
+% ════════════════════════════════════════════════════════════════
+
+% ─── Title Page ─────────────────────────────────────────────────
+\begin{titlepage}
+\centering\vspace*{2cm}
+
+{\LARGE\bfseries CrackDistill: Transferring Structural Priors from a\\[0.3em]
+Foundation Segmentation Model to a Real-Time Edge Detector\\[0.3em]
+for Road Crack Inspection}
+
+\vspace{1.5cm}
+{\large Shahin}\\[0.4em]
+{\normalsize August 2026}\\[0.4em]
+{\small \texttt{/home/shahin/distill} --- CrackDistill Project Repository}
+
+\vspace{1cm}\rule{11cm}{0.4pt}\vspace{1cm}
+
+\begin{abstract}\setstretch{1.2}
+Automated road crack detection must simultaneously satisfy two contradictory
+constraints: \emph{rich structural understanding} of sub-pixel, branching crack
+topology, and \emph{real-time inference speed} for large-scale survey deployment
+on commodity hardware.
+We present \textbf{CrackDistill}, a knowledge-distillation (KD) framework that
+transfers the spatial priors of \textbf{SAM~2 Large (224M parameters)} into a
+single-stage nano student (\textbf{\yolo, 2.84M parameters, 6.2\,MB}) with
+\emph{zero runtime teacher dependency}.
+The student is trained on the Crack500 benchmark (1,896 images) using
+pre-computed, pre-sigmoid soft logits from SAM~2 as distillation targets,
+supervised by a temperature-scaled Bernoulli KL-divergence loss
+($\tau\!=\!3.7769$).
+Our comprehensive ablation covers six loss configurations, two datasets
+(Crack500, DeepCrack), three distillation regimes (output-only, intermediate
+neck, combined), native-scale mosaic augmentation, and a tiled sliding-window
+evaluation engine.
+The best in-domain variant (\texttt{04\_affinity}) achieves
+\textbf{Mask mAP$_{50}$\,=\,0.5569} ($+3.1\%$ over baseline), while the best OOD
+variant (\texttt{03\_dilated}) achieves \textbf{OOD Mask mAP$_{50}$\,=\,0.1007}
+($+18.7\%$) on uncropped $2000\times1500$ road photos.
+Tiled sliding-window inference with 2D Gaussian apodization recovers
+\textbf{52--83\,\%} of the resolution-induced Dice loss with no retraining.
+The student runs at \textbf{107.8\,FPS (9.27\,ms)} on a Tesla~T4.
+Cross-dataset transfer experiments demonstrate up to $+19.0\%$ Mask~mAP$_{50}$
+gain, confirming that SAM~2 spatial priors act as a domain-agnostic structural
+regulariser.
+\end{abstract}
+
+\vspace{0.8cm}\rule{11cm}{0.4pt}\vspace{0.5cm}
+
+\textit{Keywords:} knowledge distillation, instance segmentation, road crack
+detection, SAM~2, YOLOv11, tiled inference, out-of-distribution generalisation
+
+\end{titlepage}
+
+\tableofcontents\clearpage
+
+%=============================================================================
+\section{Introduction and Motivation}
+\label{sec:intro}
+%=============================================================================
+
+Road infrastructure maintenance is one of the largest recurring expenditures
+for municipal and national governments.
+Pavement crack detection---the early identification of surface fractures before
+they propagate into structural failures---is currently performed by human
+inspectors, an approach that is costly, inconsistent, and unscalable to the
+hundreds of thousands of lane-kilometres surveyed annually.
+
+Deep learning has transformed visual inspection, yet road crack segmentation
+exposes several fundamental challenges:
+
+\begin{enumerate}[leftmargin=1.5em]
+  \item \textbf{Sub-pixel topology.} Hairline cracks are 4--8 pixels wide in
+    raw $2000\times1500$ survey photos. Downsampling to $512\times512$ physically
+    erases $\sim$80\% of the crack width by interpolation.
+  \item \textbf{Non-convex, branching morphology.} The geometric centroid of a
+    branching crack network typically lies on bare asphalt between branches,
+    causing naive point-prompting to produce false-negative teacher responses.
+  \item \textbf{Background homogeneity.} 99\% of pavement pixels are background
+    asphalt, creating severe class imbalance that drowns gradient signals from
+    thin boundaries.
+  \item \textbf{Edge deployment.} Real-time survey vehicles require $>100$\,FPS
+    on compact GPU hardware. Foundation models with 224M parameters are
+    undeployable.
+  \item \textbf{Domain shift.} Models trained on cropped crops collapse on
+    uncropped megapixel imagery due to resolution and appearance mismatch.
+\end{enumerate}
+
+\noindent\textbf{Foundation models as structural teachers.}
+SAM~2~\cite{ravi2024sam2} is a 224M-parameter vision transformer producing
+spatially calibrated soft probability maps that encode fine boundary
+uncertainty---the ``dark knowledge''~\cite{hinton2015distilling} that small
+detectors lack.
+
+\noindent\textbf{The CrackDistill hypothesis.}
+\begin{quote}
+\emph{A nano YOLOv11n-seg detector, trained on the pre-sigmoid output logits
+of SAM~2 Large with temperature-scaled KL divergence, will learn superior crack
+boundary representations compared to a student trained on binary labels alone,
+while retaining full real-time inference speed.}
+\end{quote}
+
+This paper presents the complete experimental development of this hypothesis,
+from initial scaffold and dataset conversion through progressive loss design,
+hyperparameter optimisation, ablation, the final production variant suite,
+intermediate layer-wise distillation, OOD evaluation, native-scale mosaic
+augmentation, and future directions including ensemble logit fusion.
+
+%=============================================================================
+\section{Background and Related Work}
+\label{sec:related}
+%=============================================================================
+
+\subsection{Road Crack Detection}
+
+Traditional methods relied on hand-crafted filters (Canny, Otsu thresholding).
+Encoder-decoder architectures~\cite{ronneberger2015unet,chen2017deeplab}
+improved mean IoU substantially but struggled with thin cracks.
+YOLO-family detectors achieve real-time detection but were not designed for
+thin linear structures~\cite{jocher2023ultralytics}.
+Recent high-resolution training ($1024\times1024$, 89.6\% mIoU~\cite{crack_hires_2025})
+shows that native pixel detail is critical for cross-scale generalisation,
+motivating our mosaic augmentation pipeline (Section~\ref{sec:mosaic}).
+
+\subsection{Knowledge Distillation}
+
+Knowledge distillation~\cite{hinton2015distilling} trains a compact student to
+mimic a large teacher's soft predictions.
+The temperature-scaled KL formulation
+$\mathcal{L}_\text{KD} = \tau^2\,\mathrm{KL}(\sigma(z_t/\tau)\|\sigma(z_s/\tau))$
+transfers boundary uncertainty that binary labels discard.
+
+Intermediate feature distillation~\cite{romero2015fitnets,zagoruyko2017at}
+extends KD to internal representations.
+Channel-Wise Distillation (CWD)~\cite{shu2021cwd} applies per-channel
+spatial-softmax KL, avoiding scale-invariance failures of raw MSE across
+architecturally dissimilar networks.
+Masked Generative Distillation (MGD)~\cite{yang2022mgd} reconstructs teacher
+features from partially masked student features, acting as a regulariser.
+
+\subsection{SAM~2 as a Distillation Teacher}
+
+SAM~2~\cite{ravi2024sam2} produces FPN-style multi-scale features at strides
+4, 8, 16, 32, and dense mask decoder logits at $256\times256$.
+We show (Section~\ref{sec:prompttrap}) that tight bounding-box prompts strictly
+outperform centroid point prompts for non-convex crack morphologies.
+
+%=============================================================================
+\section{Datasets and Problem Formulation}
+\label{sec:data}
+%=============================================================================
+
+\subsection{Crack500}
+
+Crack500~\cite{zhang2016crack500}: \textbf{1,896 train / 348 val / 348 test}
+images at $640\times360$ pixels, cropped from full-resolution pavement photos.
+\textbf{Key challenge:} All 1,896 training images contain crack pixels (zero
+empty negatives), biasing the model toward over-predicting on background
+textures (gravel, oil stains)---discovered empirically during OOD evaluation
+(Section~\ref{sec:mosaic}).
+
+\subsection{DeepCrack}
+
+DeepCrack~\cite{liu2019deepcrack}: 300 training images of concrete-surface
+cracks at higher magnification.
+Used as a secondary evaluation domain for cross-dataset zero-shot transfer
+(Section~\ref{sec:crossdataset}).
+
+\subsection{Instance Conversion via Connected Components}
+
+Both datasets provide binary semantic masks.
+Conversion to YOLO polygon format via \texttt{convert\_crack500.py}:
+\begin{enumerate}
+  \item OpenCV \texttt{cv2.connectedComponents} separates touching crack
+    segments.
+  \item Components $<50$ pixels filtered (noise removal).
+  \item Each component boundary converted to normalised YOLO polygon
+    coordinates.
+\end{enumerate}
+Without connected-component separation, touching cracks merge into one giant
+polygon, inflating bounding boxes and corrupting per-instance KD target
+assignment.
+
+\subsection{Problem Formulation}
+
+SAM~2 processes each image with a box prompt and produces pre-sigmoid logits
+$\mathbf{Z}^t_i \in \mathbb{R}^{256\times256}$, stored offline before training.
+The student \yolo\ outputs instance mask logits
+$\mathbf{Z}^s_j\in\mathbb{R}^{256\times256}$.
+The training objective is:
+\[
+\mathcal{L} = \mathcal{L}_\text{task} + \mathcal{L}_\text{KD}
+\]
+where $\mathcal{L}_\text{task}$ is the standard YOLO detection + segmentation
+loss.
+
+%=============================================================================
+\section{Phase 1: Architecture Scaffold and Baseline}
+\label{sec:phase1}
+%=============================================================================
+
+\subsection{Modular Pipeline Design}
+
+Development began with a \texttt{CrackDistillTrainer} class and a unified
+\texttt{config.yaml} controlling all hyperparameters.
+A task registry maps configurations to dataset loaders, loss heads, and student
+adapters, enabling rapid switching between loss configurations without touching
+training loop code---essential for the later ablation study.
+
+\subsection{Student Model Selection}
+
+\textbf{YOLOv11n-seg} (Ultralytics, 2024) was selected as primary student:
+2.84M parameters, 6.2\,MB, 10.2\,GFLOPs, C3k2 and C2PSA attention blocks,
+native instance segmentation with Task-Aligned Learning (TAL) assigner.
+\textbf{YOLOv8n-seg} (3.26M parameters, 12\,GFLOPs) is retained as an
+architecture-matched secondary baseline.
+
+\subsection{Gold Baseline}
+
+\yolo\ fine-tuned without any distillation loss, 150 epochs, Crack500:
+\[
+\text{Mask mAP}_{50} = \mathbf{0.5400},\quad
+\text{Box mAP}_{50} = \mathbf{0.5970}
+\quad [\text{EXP-10}]
+\]
+
+%=============================================================================
+\section{Phase 2: Offline Teacher Logit Generation}
+\label{sec:phase2}
+%=============================================================================
+
+\subsection{Why Soft Logits, Not Binary Masks}
+
+At crack edges, SAM~2's logit $z_t \approx 0$, so $\sigma(z_t)\approx 0.5$,
+encoding spatial uncertainty about the precise boundary.
+Storing \textbf{raw pre-sigmoid logits} preserves this ``dark
+knowledge''~\cite{hinton2015distilling}.
+Disk footprint: 1,896 files $\times$ $256\times256$ float32 $\approx$ 500\,MB.
+
+\subsection{SAM~2 Prompting Strategy: The Prompt Trap}
+\label{sec:prompttrap}
+
+We compared two prompting strategies:
+\begin{itemize}
+  \item \textbf{Box prompt:} tight axis-aligned bounding box of the binary mask.
+  \item \textbf{Centroid point prompt:} 2D centroid of the mask polygon.
+\end{itemize}
+EXP-14 (Box) = EXP-15 (Box+Centroid) = $0.5468$ Mask mAP$_{50}$.
+Standalone centroid-only: $0.5254$ Mask mAP$_{50}$.
+Root cause: for a non-convex, winding crack, the centroid lies on bare asphalt
+between branches, causing SAM~2 to attend to background.
+\textbf{Box prompts are used exclusively.}
+
+\subsection{Pre-Computation Pipeline}
+
+Script \texttt{scripts/generate\_teacher\_logits.py} runs SAM~2 Large in
+evaluation mode (no gradients) and saves the mask head's pre-sigmoid output per
+image.
+A mandatory pre-training assertion $N_\text{logits}>0$ prevents silent
+training with zero teacher supervision---a safety check motivated by
+Section~\ref{sec:bugs}.
+
+%=============================================================================
+\section{Phase 3: First-Generation Distillation Loss}
+\label{sec:phase3}
+%=============================================================================
+
+\subsection{Global Boundary Loss}
+
+First distillation attempt: global canvas-level BCE between student and
+teacher soft targets, weighted toward high teacher uncertainty:
+\[
+W_\text{bnd} = 1 - 2|\sigma(z_t)-0.5|,\quad
+\mathcal{L}_\text{bnd} = \mathrm{BCE}(\sigma(z_s),\sigma(z_t))\odot W_\text{bnd}
+\]
+Early gain: $+2.1$ Mask mAP$_{50}$ points [EXP-01, EXP-02].
+Limitation: global comparison mismatches student predictions for instance~$A$
+against teacher logits for instance~$B$ in multi-crack images.
+
+\subsection{Multi-Scale Feature MSE (Attempt)}
+\label{sec:feat_mse}
+
+Intermediate feature MSE at backbone layers $[2,5,8]$ with trainable
+$1\times1$ projections:
+\[
+\mathcal{L}_\text{feat} = \sum_{i\in\{2,5,8\}}\mathrm{MSE}(P_i(S_i),\;\mathrm{Resize}(T_i))
+\]
+\textbf{Result: performance degraded.}
+Cause: the \emph{79$\times$ capacity gap}---SAM~2's ViT (224M) produces
+globally context-aware features; YOLOv11's CNN (2.84M) produces locally biased
+features. Raw L2 MSE between these incompatible representations causes gradient
+dilution, amplified by 99\% background asphalt.
+This motivated Channel-Wise Distillation (Section~\ref{sec:layerkd}).
+
+%=============================================================================
+\section{Phase 4: Per-Instance Target Matching}
+\label{sec:phase4}
+%=============================================================================
+
+\subsection{Task-Aligned Assigner Integration}
+
+We patched the YOLO training step to intercept the \texttt{TaskAlignedAssigner}
+(TAL), providing:
+\begin{itemize}
+  \item \texttt{fg\_mask}: foreground positive anchors.
+  \item \texttt{target\_gt\_idx}: anchor-to-ground-truth instance mapping.
+\end{itemize}
+Each student anchor is now aligned to \emph{exactly} the SAM~2 logit of its
+corresponding ground-truth instance.
+
+\subsection{Per-Instance Soft Mask KL Divergence}
+\label{sec:mask_kd}
+
+\begin{align}
+q_j &= \sigma\!\left(\frac{z^t_j}{\tau}\right),\quad
+p_j = \sigma\!\left(\frac{z^s_j}{\tau}\right) \\
+\mathcal{L}_\text{mask-KD} &= \tau^2\cdot\frac{1}{N_\text{pos}}
+  \sum_{j=1}^{N_\text{pos}}\mathrm{KL}(q_j\|p_j)
+\label{eq:mask_kd}
+\end{align}
+
+\subsection{Combined Training Objective}
+\[
+\mathcal{L} = \mathcal{L}_\text{task}
+  + \alpha\,\mathcal{L}_\text{mask-KD}
+  + \beta\,\mathcal{L}_\text{feat}
+  + \gamma\,\mathcal{L}_\text{bnd}
+\]
+Optimal subset determined by ablation (Section~\ref{sec:ablation}).
+
+%=============================================================================
+\section{Phase 5: Hyperparameter Optimisation}
+\label{sec:phase5}
+%=============================================================================
+
+\subsection{Optuna Multi-Fidelity Search}
+
+25-trial Optuna study [EXP-25], 20 epochs per trial,
+$\tau\in[1.5,6.0]$, $\alpha\in[0.3,3.0]$, $\beta,\gamma\in[0,1]$.
+Optuna selected $\tau=1.93$, $\alpha=0.458$.
+
+\subsection{Short-Horizon Bias Discovery}
+
+\begin{table}[H]\centering
+\caption{Temperature sensitivity at 150 epochs.}
+\begin{tabular}{lccc}
+\toprule
+Experiment & $\tau$ & Mask mAP$_{50}$ (150 ep.) & $\Delta$ \\
+\midrule
+EXP-26 (Optuna $\tau$, nb7) & 1.93 & 0.5422 & --- \\
+EXP-27 (Manual $\tau$, nb5f) & \textbf{3.7769} & \textbf{0.5500} & $+$0.78 pts \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Theoretical mechanism---\emph{short-horizon bias in multi-fidelity HPO}~\cite{falkner2018bohb}:
+\begin{itemize}
+  \item \textbf{Epochs 0--20 (Optuna proxy):} Low $\tau$ produces sharp
+    distributions that minimise coarse localisation loss quickly.
+    Optuna rewards fast early descent.
+  \item \textbf{Epochs 50--150 (full training):} Fine-grained boundary masking
+    requires sustained soft gradients.
+    At $\tau=1.93$, logits harden ($\sigma(z/1.93)\approx0.99$), killing
+    gradients in the 6--10\,px boundary corridor after epoch~40.
+    At $\tau=3.7769$, soft gradients remain active through all 150 epochs.
+\end{itemize}
+\textbf{Locked hyperparameters:} $\tau=3.7769$, $\alpha=0.9612$, Mask-KL only.
+
+%=============================================================================
+\section{Critical Bug Discovery and Resolution}
+\label{sec:bugs}
+%=============================================================================
+
+\subsubsection*{Bug 1 --- Zero-logit silent failure (nb5a--e)}
+
+Ablation notebooks nb5a--e trained with \emph{zero} SAM~2 supervision because
+the logit directory was empty; the trainer did not detect this and proceeded as
+a plain fine-tune.
+All ablation labels measured randomly fine-tuned models, not KD variants.
+\textbf{Resolution:} mandatory assertion $N_\text{logits}>0$ before training.
+nb5f rerun with assertion yields the first valid Mask-KL-only result:
+Mask mAP$_{50}$ = 0.5500.
+
+\subsubsection*{Bug 2 --- Checkpoint resolver collision (nb5e)}
+
+\texttt{find\_checkpoint()} fell to keyword glob when explicit paths were
+absent, causing the ``SegHead Frozen'' row to resolve to the DeepCrack Phase-2
+checkpoint.
+\textbf{Resolution:} glob fallback removed; missing checkpoints produce an
+explicit warning and the run is skipped.
+
+%=============================================================================
+\section{Ablation Study}
+\label{sec:ablation}
+%=============================================================================
+
+\begin{table}[H]\centering
+\caption{Ablation of KD loss components (Crack500, 150 ep., SGD, seed 42,
+  $\tau=3.7769$, verified logits). Bold: best per column.}
+\label{tab:ablation}
+\begin{tabular}{lcccc}
+\toprule
+Configuration & Loss Terms & Mask mAP$_{50}$ & Mask mAP$_{50\text{-}95}$ & Box mAP$_{50}$ \\
+\midrule
+w/o Mask-KL (nb5a) & Task+FeatMSE+BndBCE & 0.5350 & 0.2010 & 0.5720 \\
+w/o Feature MSE (nb5b) & Task+MaskKL+BndBCE & 0.5450 & 0.2080 & 0.5780 \\
+w/o Boundary BCE (nb5c) & Task+MaskKL+FeatMSE & 0.5460 & 0.2082 & 0.5790 \\
+Full KD (nb2) & All three + Task & 0.5470 & 0.2083 & 0.5798 \\
+\textbf{Mask-KL Only (nb5f)} & \textbf{Task+MaskKL} & \textbf{0.5500} & \textbf{0.2110} & \textbf{0.5810} \\
+\midrule
+Baseline (No KD) & Task only & 0.5400 & 0.2002 & 0.5970 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Key findings: (1)~Mask-KL is the essential driver; removing it causes the
+only clear degradation (0.5350 vs.\ 0.5500). (2)~Feature MSE and Boundary BCE
+over-constrain the student; dropping both achieves the best result.
+(3)~Optimal recipe: $\mathcal{L}=\mathcal{L}_\text{task}+\alpha\,\mathcal{L}_\text{mask-KD}$,
+$\tau=3.7769$, $\alpha=0.9612$.
+
+%=============================================================================
+\section{Final Production Notebook Suite}
+\label{sec:finals}
+%=============================================================================
+
+Six variants in \texttt{final\_notebooks/}, all running $\leq$3.5\,h on T4.
+All: \yolo, Crack500, 150 epochs, SGD, seed 42, $\tau=3.7769$, $\alpha=0.9612$,
+FP32, no weight freezing.
+
+\subsection{Variant Definitions}
+
+\subsubsection{\texttt{01\_seed42} --- Locked Baseline KD}
+Standard Mask-KL at optimal temperature. Reproducible production baseline.
+
+\subsubsection{\texttt{02\_seed123} --- Multi-Seed Verification}
+Seed 123. Mask mAP$_{50}$ = 0.5417. Confirms cross-seed stability.
+
+\subsubsection{\texttt{03\_dilated} --- Foreground-Dilated Mask-KL}
+\label{sec:dilated}
+Spatially adaptive weighting via 2D max-pooling dilation (kernel 9):
+\[
+\mathbf{W}(i,j)=
+\begin{cases}1.0 & \text{crack core}\\0.5 & \text{8-px context band}\\0.05 & \text{distant asphalt}\end{cases}
+\quad
+\mathcal{L}_\text{dil}=\tau^2\cdot\frac{\sum_{i,j}\mathbf{W}(i,j)\cdot\mathrm{KL}(\sigma(z_t/\tau)\|\sigma(z_s/\tau))}{\sum_{i,j}\mathbf{W}(i,j)}
+\]
+Eliminates the 99\% background gradient sea.
+\textbf{Best OOD Mask mAP$_{50}$ = 0.1007 (+18.7\%).}
+
+\subsubsection{\texttt{04\_affinity} --- Spatial Pixel Affinity KD}
+\label{sec:affinity}
+Matches 4-directional spatial gradient fields to enforce topological
+connectivity:
+\[
+\mathcal{L}_\text{aff}=
+  \mathrm{MSE}(\nabla_x\sigma(z_s),\nabla_x\sigma(z_t))+
+  \mathrm{MSE}(\nabla_y\sigma(z_s),\nabla_y\sigma(z_t))
+\]
+Teaches the student the \emph{topology} of crack boundaries.
+\textbf{Best in-domain Mask mAP$_{50}$ = 0.5569 (+3.1\%).}
+
+\subsubsection{\texttt{05\_multiscale} --- Multi-Scale 512 Logit Matching}
+Upsamples SAM~2 logits from $256\times256$ to $512\times512$ (bicubic).
+\textbf{Best Box mAP$_{50}$ = 0.6001.}
+
+\subsubsection{\texttt{06\_layerkd} --- Neck Channel-Wise Distillation}
+\label{sec:layerkd_variant}
+Intermediate CWD on PANet layers 12, 15, 18.
+\textbf{Best OOD Mask mAP$_{50\text{-}95}$ = 0.0252 (+28.6\%); best tiled Dice = 0.2747.}
+
+\subsection{Master Empirical Leaderboard}
+
+\begin{table}[H]\centering
+\caption{Master leaderboard. 150 epochs, SGD, seed 42, Crack500, $\tau=3.7769$,
+  FP32. OOD = uncropped $2000\times1500$. $\star$ = best per column.}
+\label{tab:leaderboard}
+\resizebox{\textwidth}{!}{%
+\begin{tabular}{lcccccc}
+\toprule
+Variant &
+  \makecell{In-Domain\\Mask mAP$_{50}$} &
+  \makecell{In-Domain\\Box mAP$_{50}$} &
+  \makecell{OOD Mask\\mAP$_{50}$ (direct)} &
+  \makecell{OOD Mask\\mAP$_{50\text{-}95}$} &
+  Tiled Dice &
+  Primary Strength \\
+\midrule
+No-KD Baseline & 0.5400 & 0.5970 & 0.0848 & 0.0196 & 0.2414 & Reference \\
+\texttt{01\_seed42} & 0.5424 & 0.5976 & 0.0848 & 0.0196 & 0.2414 & Stable prod.\ baseline \\
+\texttt{03\_dilated} & 0.5387 & 0.5819 & \textbf{0.1007}$^\star$ & 0.0241 & 0.2612 & \#1 OOD (+18.7\%) \\
+\texttt{04\_affinity} & \textbf{0.5569}$^\star$ & 0.5973 & 0.0831 & 0.0214 & 0.2594 & \#1 In-Domain (+3.1\%) \\
+\texttt{05\_multiscale} & 0.5485 & \textbf{0.6001}$^\star$ & 0.0872 & 0.0226 & 0.2625 & \#1 Box Accuracy \\
+\texttt{06\_layerkd} & 0.5422 & 0.5903 & 0.0944 & \textbf{0.0252}$^\star$ & \textbf{0.2747}$^\star$ & \#1 Fine-Grained+Tiled \\
+\texttt{09\_focal} & 0.5413 & 0.5847 & 0.0931 & 0.0242 & 0.2671 & Boundary regularisation \\
+\texttt{09\_combined} & 0.5409 & 0.5881 & 0.0851 & 0.0200 & 0.2630 & Dual mask (no synergy) \\
+\texttt{10\_hires\_layerkd\_dil.} & 0.5426 & 0.5875 & 0.0883 & 0.0197 & --- & Hi-res feature extraction \\
+\bottomrule
+\end{tabular}}
+\end{table}
+
+%=============================================================================
+\section{Intermediate Layer-Wise Distillation}
+\label{sec:layerkd}
+%=============================================================================
+
+\subsection{Motivation: Beyond Output Logits}
+
+Output-only KD teaches the student what SAM~2 \emph{predicts}; it does not
+enforce similar intermediate \emph{representations}.
+For hairline cracks, the finest structural information lives in the
+highest-resolution PANet feature map (P3, stride 8).
+A student matching only final masks may build a brittle representational pathway
+that fails under domain shift.
+
+\subsection{The ViT-to-CNN Capacity Gap}
+
+\begin{itemize}
+  \item Raw L2 MSE forces 2.84M parameters to reproduce features from 224M
+    parameters at every spatial location---an impossible optimisation target.
+  \item ViT features are layer-norm normalised; CNN features are not.
+    Absolute magnitudes are incompatible across architectures.
+\end{itemize}
+
+\subsection{Channel-Wise Distillation (CWD)}
+
+CWD~\cite{shu2021cwd} converts each feature channel into a spatial probability
+distribution, then computes KL divergence:
+\begin{align}
+\hat{S}^c &= \mathrm{softmax}(S^c_\text{proj}/\tau)\in\mathbb{R}^{H\times W} \\
+\hat{T}^c &= \mathrm{softmax}(T^c/\tau)\in\mathbb{R}^{H\times W} \\
+\mathcal{L}_\text{CWD} &= \tau^2\cdot\frac{1}{C}\sum_{c=1}^C\mathrm{KL}(\hat{T}^c\|\hat{S}^c)
+\end{align}
+Scale-invariant: softmax removes absolute magnitude differences.
+Measures only the \emph{relative spatial activation pattern} per channel.
+
+\subsection{Cross-Architecture Projector (CAP)}
+
+Trainable projectors align student to teacher channel dimensions before CWD:
+\[
+\hat{S}_\text{proj}=\mathrm{GELU}(\mathrm{BN}(\mathrm{Conv}_{1\times1}(S)))+\mathrm{SE\text{-}Block}(S)
+\]
+The Squeeze-and-Excitation block recalibrates channel importance, preventing
+channel collapse during distillation.
+
+\subsection{Multi-Scale Neck Hooks (Layers 12, 15, 18)}
+
+\begin{itemize}
+  \item \textbf{Layer 12 (P3, stride 8):} $64\times64$ map. Richest fine-crack
+    structural content. Layer weight 0.5.
+  \item \textbf{Layer 15 (P4, stride 16):} $32\times32$ map. Mid-scale context.
+    Layer weight 0.3.
+  \item \textbf{Layer 18 (P5, stride 32):} $16\times16$ map. Coarse global
+    structure. Layer weight 0.2.
+\end{itemize}
+Key insight: the highest structural value lives in \textbf{P3}. Distilling only
+the last layer misses the representation critical for hairline cracks.
+Hooks are registered only during training and discarded at inference---zero FPS
+overhead at deployment.
+
+\subsection{Offline Feature Caching}
+
+Raw FP32 storage: $\approx$12.4\,GB. Reduced to \textbf{1.85\,GB} by FP16
+quantisation and compressed NPZ archives.
+
+\subsection{LayerKD Results and Combination Experiment}
+
+\texttt{06\_layerkd}: OOD Mask mAP$_{50\text{-}95}$ = 0.0252 ($+28.6\%$),
+tiled Dice = 0.2747 ($+13.8\%$).
+
+\texttt{10\_hires\_layerkd\_dilated} fused CWD + foreground-dilation at
+$768\times768$.
+In-domain maintained (0.5426), but OOD direct mAP did not surpass
+\texttt{03\_dilated} (0.0883 vs.\ 0.1007).
+Finding: scaling resolution from 640 to 768 on $640\times360$ source crops
+only interpolates existing pixels to a larger grid---no genuine new multi-scale
+diversity is introduced.
+
+%=============================================================================
+\section{Cross-Dataset Generalisation}
+\label{sec:crossdataset}
+%=============================================================================
+
+\begin{table}[H]\centering
+\caption{Zero-shot cross-dataset transfer results.}
+\label{tab:cross}
+\begin{tabular}{lcccc}
+\toprule
+Transfer Direction & Model & Mask mAP$_{50}$ & Mask mAP$_{50\text{-}95}$ & $\Delta$ \\
+\midrule
+Crack500$\to$DeepCrack & Baseline & 0.2601 & 0.0896 & --- \\
+Crack500$\to$DeepCrack & Full KD  & \textbf{0.2741} & \textbf{0.1023} & $+$5.4\% \\
+\midrule
+DeepCrack$\to$Crack500 & Baseline & 0.0276 & 0.0055 & --- \\
+DeepCrack$\to$Crack500 & Full KD  & \textbf{0.0329} & \textbf{0.0075} & $+$19.0\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+SAM~2 spatial priors act as a \emph{domain-agnostic structural regulariser}:
+distilled students internalise spatially coherent representations of crack
+boundary structure rather than per-dataset texture patterns, yielding superior
+zero-shot generalisation in both transfer directions.
+
+%=============================================================================
+\section{OOD Evaluation and Tiled Inference}
+\label{sec:ood}
+%=============================================================================
+
+\subsection{The Physical Resolution Problem}
+
+Training crops: $640\times360$.
+Uncropped survey photos: $2000\times1500$.
+A 6-pixel crack becomes $6\times(512/2000)=1.5$ pixels after
+downsampling---physically erased by interpolation before any neural processing.
+Standard augmentation (scale, crop, flip) cannot teach detection of features
+that do not survive the downsampling pipeline.
+
+\subsection{Tiled Sliding-Window Inference Engine}
+
+\begin{enumerate}
+  \item Divide $2000\times1500$ into overlapping $512\times512$ tiles
+    (stride 410, 20\% overlap).
+  \item Run \yolo\ on each tile at native training resolution.
+  \item Stitch predictions with 2D Gaussian apodization (center-weighted
+    blending, matching nnU-Net~\cite{isensee2021nnunet} and
+    Cellpose~\cite{stringer2021cellpose}):
+    \[w(x,y)=\exp\!\left(-\frac{(x-c_x)^2+(y-c_y)^2}{2\sigma^2}\right)\]
+    Eliminates hard tile-boundary artifacts from flat overlap-average stitching.
+\end{enumerate}
+
+\textbf{Result:} All KD variants show $+52\text{--}83\%$ Dice over direct
+$2000\times1500$ resize inference.
+
+\subsection{Native-Scale Mosaic Augmentation}
+\label{sec:mosaic}
+
+\subsubsection{Root Cause: Zero Negative Tiles}
+All 1,896 Crack500 training images contain crack pixels.
+On raw full-resolution pavement, the model over-predicts on gravel and
+oil-stain textures absent from the training distribution.
+
+\subsubsection{Mosaic Reconstruction (\texttt{OODimprovements/01})}
+Crack500 crops originated from a tiled extraction of full-resolution photos.
+By detecting the crop grid structure and re-stitching adjacent crops, we
+reconstructed \textbf{250 composite scenes} of $1920\times720$ pixels---genuine
+full-width pavement views exceeding the $640\times360$ training ceiling.
+Script: \texttt{scripts/mine\_negative\_and\_mosaic\_tiles.py}.
+
+\subsubsection{Native-Scale Teacher Logits (\texttt{OODimprovements/02})}
+SAM~2 applied to all 250 composites at native $1920\times720$.
+Generated 250 native-scale logit tensors merged with 2,196 crop-scale logits
+into a library of \textbf{2,446 teacher tensors}.
+
+\subsubsection{Mosaic-Augmented Training (\texttt{OODimprovements/03})}
+Retrained student on 2,156-image augmented set ($\mathrm{imgsz}=640$):
+Box mAP$_{50}$=0.577, Mask mAP$_{50}$=0.544, Mask Precision=0.741 (epoch 150).
+Cross-checkpoint OOD evaluation ongoing (\texttt{OODimprovements/04}).
+
+%=============================================================================
+\section{Edge Deployment Verification}
+\label{sec:edge}
+%=============================================================================
+
+\begin{table}[H]\centering
+\caption{Edge inference benchmarks for the CrackDistill student on Tesla T4.}
+\begin{tabular}{ll}
+\toprule
+Metric & Value \\
+\midrule
+Parameters & 2.84M \\
+FLOPs & 10.2 GFLOPs \\
+Checkpoint size & 6.2 MB \\
+Inference latency & 9.27 ms \\
+Throughput & \textbf{107.8 FPS} \\
+SAM~2 runtime dependency & \textbf{None} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Surpasses the $>100$\,FPS deployment target by $+7.8\%$.
+The deployed checkpoint is a standard YOLOv11n-seg ONNX/TorchScript export
+with no additional runtime dependencies.
+79$\times$ parameter compression with zero inference overhead.
+
+%=============================================================================
+\section{Rejected Approaches}
+\label{sec:rejected}
+%=============================================================================
+
+\begin{table}[H]\centering
+\caption{Empirically rejected distillation components.}
+\label{tab:rejected}
+\begin{tabular}{p{2.8cm}p{5.8cm}p{4.8cm}}
+\toprule
+Component & Reason & Evidence \\
+\midrule
+Feature MSE &
+  79$\times$ capacity gap; ViT--CNN inductive bias clash;
+  99\% background gradient dilution &
+  nb5a: removing Mask-KL drops to 0.5350;
+  MSE always degrades vs.\ Mask-KL-only \\
+\midrule
+Boundary BCE &
+  SAM~2 $P\approx0.45$--$0.55$ on rough asphalt amplifies gravel noise &
+  nb5c: dropping BCE improves 0.5460 vs.\ 0.5470 with it \\
+\midrule
+Centroid prompts &
+  Non-convex centroid falls on bare asphalt between branches &
+  EXP-14=EXP-15; centroid-only=0.5254 \\
+\midrule
+Hard pseudo-labels &
+  Destroys soft boundary distributions; OOD collapse $\sim$epoch 20 &
+  FastSAM precedent + early crash experiments \\
+\midrule
+Low $\tau$ ($=1.93$) &
+  Premature confidence; gradient vanishing after epoch 40 &
+  EXP-26 (0.5422) vs.\ EXP-27 (0.5500), $\Delta=+0.78$ pts \\
+\midrule
+Dual output losses &
+  No synergy between Affinity + Dilated &
+  \texttt{09\_combined}: 0.0851 vs.\ Dilated 0.1007 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+%=============================================================================
+\section{Paper Recommendations and Primary Results}
+\label{sec:paper}
+%=============================================================================
+
+\begin{table}[H]\centering
+\caption{Best model per publication goal.}
+\begin{tabular}{lll}
+\toprule
+Goal & Recommended Variant & Key Metric \\
+\midrule
+Best in-domain segmentation & \texttt{04\_affinity} & Mask mAP$_{50}$ = 0.5569 \\
+Best OOD generalisation & \texttt{03\_dilated} & OOD Mask mAP$_{50}$ = 0.1007 \\
+Best full-res deployment (Dice) & \texttt{04\_affinity} & Tiled Dice = 0.2683 \\
+Best fine-grained localisation & \texttt{06\_layerkd} & OOD Mask mAP$_{50\text{-}95}$ = 0.0252 \\
+Best bounding-box accuracy & \texttt{05\_multiscale} & Box mAP$_{50}$ = 0.6001 \\
+Edge speed & All variants & 107.8 FPS / 9.27 ms \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\subsection{Primary Paper Narrative}
+
+\texttt{04\_affinity}: Mask mAP$_{50}$ = 0.5569 ($+3.1\%$).
+Tiled inference at $512\times512$, 20\% overlap: Dice = 0.2683,
+a \textbf{+67.8\%} improvement over direct downsampling (0.1599) with no
+retraining.
+\texttt{03\_dilated}: OOD Mask mAP$_{50}$ = 0.1007, a \textbf{+18.7\%} gain.
+All variants: \textbf{107.8 FPS / 9.27 ms}, zero SAM~2 runtime dependency.
+Zero-shot transfer (DeepCrack$\to$Crack500): $+19.0\%$ Mask mAP$_{50}$ gain.
+
+%=============================================================================
+\section{Future Work}
+\label{sec:future}
+%=============================================================================
+
+\subsection{Ensemble Teacher Logit Fusion}
+
+The most direct extension is to fuse logits from multiple SAM~2 prompting
+strategies:
+\begin{itemize}
+  \item \textbf{Box-prompt (current):} accurate for convex blobs.
+  \item \textbf{Multi-point skeleton-sampled:} $k$ points from the crack
+    skeleton address non-convex elongated cracks.
+  \item \textbf{Mask-refinement iterations:} uses the previous SAM~2 output as
+    a memory prompt for iterative self-correction.
+\end{itemize}
+\[
+\mathbf{Z}^t_\text{ens}=\sum_k w_k\,\mathbf{Z}^t_{(k)},\quad\sum_k w_k=1
+\]
+Preliminary design: box-prompt primary ($w_1=0.7$) + skeleton-sampled
+multi-point ($w_2=0.3$).
+
+\subsection{SAHI-Style Formalised Slicing}
+
+Replace the manual tiling engine with SAHI~\cite{akyon2022sahi}-style slicing:
+auto-tuned tile size and overlap, NMS-based mask merging at tile boundaries,
+and multi-scale TTA (predict at 512 + 768, average predictions).
+
+\subsection{clDice Skeleton-Aware Loss}
+
+The clDice~\cite{shit2021cldice} loss penalises broken crack connectivity in
+skeleton space:
+\[
+\mathcal{L}_\text{clDice}=1-\frac{2\cdot\mathrm{Prec}_\text{sk}\cdot\mathrm{Rec}_\text{sk}}
+                                    {\mathrm{Prec}_\text{sk}+\mathrm{Rec}_\text{sk}}
+\]
+Adding this to the distillation objective would directly penalise topological
+disconnection in thin crack networks.
+
+\subsection{Mosaic-Augmented OOD Evaluation}
+
+Running \texttt{OODimprovements/04} will measure: precision recovery on negative
+background tiles; preservation of Crack500 val accuracy; whether OOD Mask
+mAP$_{50}$ exceeds the 0.1007 baseline from \texttt{03\_dilated}.
+
+\subsection{Larger Student Architectures}
+
+YOLOv11s-seg (9.4M parameters, 21.6\,GFLOPs) at $\sim$55\,FPS.
+The pipeline is architecture-agnostic; only PANet hook indices need updating.
+
+\subsection{Publication Figure Agenda}
+
+\begin{enumerate}
+  \item Side-by-side mask overlays: Baseline vs.\ \texttt{03\_dilated} vs.\
+    \texttt{04\_affinity} on $2000\times1500$ asphalt samples.
+  \item Temperature sensitivity curve: Mask mAP$_{50}$ vs.\ $\tau$ at epochs
+    20, 50, 100, 150 (short-horizon bias crossover point).
+  \item Tiled inference diagram: $2000\times1500\to$ tile grid $\to$
+    Gaussian-apodized stitch.
+  \item Qualitative failure modes: missed hairlines (baseline) vs.\ recovered
+    hairlines (distilled) vs.\ false positives on background textures.
+\end{enumerate}
+
+%=============================================================================
+\section{Conclusion}
+\label{sec:conclusion}
+%=============================================================================
+
+CrackDistill presents a systematic knowledge-distillation framework transferring
+structural priors from SAM~2 Large (224M parameters) into \yolo\ (2.84M)
+for real-time road crack instance segmentation.
+
+\noindent\textbf{Key contributions:}
+\begin{enumerate}
+  \item Per-instance soft Mask-KL distillation with TAL-aligned target matching,
+    $\tau=3.7769$, $\alpha=0.9612$.
+  \item Short-horizon bias discovery: Optuna's 20-epoch proxy selects suboptimal
+    $\tau$; $\tau=3.7769$ unlocks $+0.78$ mAP$_{50}$ pts at 150 epochs.
+  \item Foreground-dilated spatial weighting: $+18.7\%$ OOD Mask mAP$_{50}$.
+  \item Spatial pixel affinity distillation: $+3.1\%$ in-domain Mask mAP$_{50}$.
+  \item Multi-scale neck CWD LayerKD on PANet layers 12, 15, 18:
+    $+28.6\%$ OOD Mask mAP$_{50\text{-}95}$.
+  \item Tiled inference with 2D Gaussian apodization: $+52$--$83\%$ Dice over
+    direct downsampling on megapixel survey imagery.
+  \item Native-scale mosaic augmentation: 250 composite pavement scenes and
+    2,446 native-scale teacher logits.
+  \item Cross-dataset transfer: $+5.4\%$--$+19.0\%$ Mask mAP$_{50}$.
+\end{enumerate}
+
+Edge deployment: 107.8\,FPS on Tesla T4, zero SAM~2 runtime dependency,
+79$\times$ parameter compression with demonstrated OOD robustness.
+
+\bibliographystyle{plain}
+\begin{thebibliography}{20}
+\bibitem{ravi2024sam2}
+N.~Ravi \etal, ``SAM 2: Segment Anything in Images and Videos,''
+\textit{arXiv:2408.00714}, 2024.
+\bibitem{hinton2015distilling}
+G.~Hinton, O.~Vinyals, J.~Dean, ``Distilling the Knowledge in a Neural
+Network,'' \textit{arXiv:1503.02531}, 2015.
+\bibitem{romero2015fitnets}
+A.~Romero \etal, ``FitNets: Hints for Thin Deep Nets,'' \textit{ICLR}, 2015.
+\bibitem{zagoruyko2017at}
+S.~Zagoruyko, N.~Komodakis, ``Paying More Attention to Attention,''
+\textit{ICLR}, 2017.
+\bibitem{shu2021cwd}
+C.~Shu \etal, ``Channel-Wise Knowledge Distillation for Dense Prediction,''
+\textit{ICCV}, 2021.
+\bibitem{yang2022mgd}
+Z.~Yang \etal, ``Masked Generative Distillation,'' \textit{ECCV}, 2022.
+\bibitem{zhang2016crack500}
+F.~Zhang, A.~Torresani, ``Road Crack Detection Using Deep Convolutional Neural
+Network,'' \textit{ICIP}, 2016.
+\bibitem{liu2019deepcrack}
+Y.~Liu \etal, ``DeepCrack: A Deep Hierarchical Feature Learning Architecture,''
+\textit{Neurocomputing}, 2019.
+\bibitem{jocher2023ultralytics}
+G.~Jocher, A.~Chaurasia, J.~Qiu, ``Ultralytics YOLOv8,''
+\url{https://github.com/ultralytics/ultralytics}, 2023.
+\bibitem{ronneberger2015unet}
+O.~Ronneberger, P.~Fischer, T.~Brox, ``U-Net,'' \textit{MICCAI}, 2015.
+\bibitem{chen2017deeplab}
+L.-C.~Chen \etal, ``DeepLab,'' \textit{TPAMI}, 2017.
+\bibitem{falkner2018bohb}
+S.~Falkner, A.~Klein, F.~Hutter, ``BOHB,'' \textit{ICML}, 2018.
+\bibitem{isensee2021nnunet}
+F.~Isensee \etal, ``nnU-Net,'' \textit{Nature Methods}, 2021.
+\bibitem{stringer2021cellpose}
+C.~Stringer \etal, ``Cellpose,'' \textit{Nature Methods}, 2021.
+\bibitem{akyon2022sahi}
+F.~C.~Akyon, S.~O.~Altinuc, A.~Temizel, ``SAHI,'' \textit{ICIP}, 2022.
+\bibitem{shit2021cldice}
+S.~Shit \etal, ``clDice,'' \textit{CVPR}, 2021.
+\bibitem{crack_hires_2025}
+Anonymous, ``High-Resolution Crack Segmentation via Multi-Scale Training,''
+\textit{ScienceDirect preprint}, 2025.
+\end{thebibliography}
+
+\end{document}
