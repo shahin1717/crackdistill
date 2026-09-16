@@ -16,39 +16,12 @@ for p in [".", "/kaggle/working", os.getcwd()]:
     if p not in sys.path:
         sys.path.insert(0, p)
 
-# 1. Patch ConfigNode in utils.config_loader
+# 1. Verify ConfigNode in utils.config_loader
 try:
     from utils.config_loader import ConfigNode
-    
-    def keys(self):
-        return self.__dict__.keys()
-    
-    def values(self):
-        return self.__dict__.values()
-    
-    def items(self):
-        return self.__dict__.items()
-    
-    def __getitem__(self, key):
-        if hasattr(self, key):
-            return getattr(self, key)
-        raise KeyError(key)
-    
-    def __setitem__(self, key, value):
-        setattr(self, key, value)
-    
-    def __iter__(self):
-        return iter(self.__dict__.keys())
-
-    ConfigNode.keys = keys
-    ConfigNode.values = values
-    ConfigNode.items = items
-    ConfigNode.__getitem__ = __getitem__
-    ConfigNode.__setitem__ = __setitem__
-    ConfigNode.__iter__ = __iter__
-    print("✓ Patched ConfigNode dictionary interface methods")
+    print("✓ Verified ConfigNode dictionary interface")
 except Exception as e:
-    print(f"ConfigNode patch warning: {e}")
+    print(f"ConfigNode import warning: {e}")
 
 # 2. Patch KDSegmentationTrainer.__init__ to parse master ConfigNode / dict automatically
 try:

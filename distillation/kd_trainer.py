@@ -276,17 +276,14 @@ class KDSegmentationTrainer(SegmentationTrainer):
         
         if kd_cfg is not None:
             self.temperature = float(kd_cfg.temperature)
-            self.kd_weight   = float(kd_cfg.losses.boundary.weight)
         else:
             self.temperature = 1.6502
-            self.kd_weight   = 2.0569
         
         self._current_paths = []
         self._kd_logged  = False
         self._kd_consecutive_errors = 0
         self._kd_total_errors = 0
         self._no_logits_warned = False
-        self.kd_losses   = []
         self._sam_targets = {}   # image_stem → soft target tensor (M, 256, 256)
         self._sam_features = {}  # image_stem → dict of features
         self._hook_handles = []
