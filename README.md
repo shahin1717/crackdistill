@@ -57,10 +57,13 @@ Every notebook is **100% self-contained and decoupled**, embedding exact asserti
 
 ## 🔬 Core Technical & Architectural Reports
 
-* **[`good_review.md`](good_review.md)** — Master Technical Review & Execution Blueprint (KD literature analysis, why other KD components were rejected, Short-Horizon Optuna dynamics, and OOD resolution).
-* **[`layerKD.md`](layerKD.md)** — Deep-dive research into Layer-by-Layer feature distillation (CWD, MGD, FFD, and ViT-to-CNN inductive bias compatibility).
-* **[`layerKDarch.md`](layerKDarch.md)** — Architectural system design for intermediate feature distillation, multi-scale layer pairing matrix, and Cross-Architecture Projectors.
-* **[`nb_exp_results.md`](nb_exp_results.md)** — Complete empirical results table across 27 experimental runs.
+All comprehensive research documents, empirical verdicts, and LaTeX drafts are cataloged in **[`reports/README.md`](reports/README.md)**:
+
+* **[`reports/good_review.md`](reports/good_review.md)** — Master Technical Review & Execution Blueprint (KD literature analysis, why other KD components were rejected, Short-Horizon Optuna dynamics, and OOD resolution).
+* **[`reports/layerKD.md`](reports/layerKD.md)** — Deep-dive research into Layer-by-Layer feature distillation (CWD, MGD, FFD, and ViT-to-CNN inductive bias compatibility).
+* **[`reports/layerKDarch.md`](reports/layerKDarch.md)** — Architectural system design for intermediate feature distillation, multi-scale layer pairing matrix, and Cross-Architecture Projectors.
+* **[`reports/nb_exp_results.md`](reports/nb_exp_results.md)** — Complete empirical results table across experimental runs.
+* **[`reports/final_verdict.md`](reports/final_verdict.md)** — Master empirical verdict and comparative leaderboard.
 
 ---
 

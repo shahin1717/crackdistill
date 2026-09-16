@@ -1,6 +1,6 @@
 # OODimprovements/ — Kaggle Notebook Suite
 
-Implements the out-of-distribution (OOD) generalization roadmap from `../next_moves_forOOD.md` and `../possibleOODimprovements.md`. Run in sequence or select specific research arms; each notebook's Kaggle output is chained to subsequent stages via Kaggle "+ Add Data -> Your Work -> Notebook Output Files".
+Implements the out-of-distribution (OOD) generalization roadmap from `../reports/next_moves_forOOD.md` and `../reports/possibleOODimprovements.md`. Run in sequence or select specific research arms; each notebook's Kaggle output is chained to subsequent stages via Kaggle "+ Add Data -> Your Work -> Notebook Output Files".
 
 ---
 

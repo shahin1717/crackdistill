@@ -7,23 +7,30 @@ This directory is the central repository for all academic reports, LaTeX papers,
 ## 📑 Index of Reports
 
 ### 1. 📜 LaTeX Master Paper & Publication Drafts
-* **[crackdistill_master_report.tex](file:///home/shahin/distill/reports/crackdistill_master_report.tex)**:
+* **[crackdistill_master_report.tex](file:///home/shahin/distill/reports/crackdistill_master_report.tex)** (also mirrored as **[crackdistill_paper.tex](file:///home/shahin/distill/reports/crackdistill_paper.tex)**):
   * **The definitive master LaTeX report** detailing the full project arc from Day 0 through the final verified breakthroughs.
   * *Covers:* Mathematical loss formulations (Bernoulli KL, CWD, Asymmetric Tversky, Prototype Upsampling), Connected Components conversion, Optuna search ($\tau=3.7769, W=0.9612$), PANet Neck CWD, 250-mosaic native teacher extraction, 2D Gaussian apodization TTA engine, all-time record leaderboards, Tesla T4 edge deployment (107.8 FPS), and future research roadmap.
 * **[crackdistill_paper_v1.tex](file:///home/shahin/distill/reports/crackdistill_paper_v1.tex)**: Initial LaTeX paper draft from August 2026.
-* **[crackdistill_paper_v1.pdf](file:///home/shahin/distill/reports/crackdistill_paper_v1.pdf)**: Compiled PDF of the initial paper draft.
+* **[crackdistill_paper_v1.pdf](file:///home/shahin/distill/reports/crackdistill_paper_v1.pdf)** (and **[crackdistill_paper.pdf](file:///home/shahin/distill/reports/crackdistill_paper.pdf)**): Compiled PDF of the paper draft.
 
 ---
 
-### 2. 📊 Empirical Registries & Leaderboards
+### 2. 🚀 Execution Roadmaps & Guides
+* **[WHAT_TO_RUN.md](file:///home/shahin/distill/reports/WHAT_TO_RUN.md)**: Execution roadmap, active notebook priority queue, and Kaggle input specifications.
+
+---
+
+### 3. 📊 Empirical Registries & Leaderboards
 * **[final_verdict.md](file:///home/shahin/distill/reports/final_verdict.md)**: Master empirical verdict and comparative leaderboard across in-domain and OOD datasets.
 * **[nb_exp_results.md](file:///home/shahin/distill/reports/nb_exp_results.md)**: Full numeric metric tables (Dice, Precision, Recall, Box/Mask mAP50, mAP50-95) for all executed Kaggle runs.
 * **[final_results_exp.md](file:///home/shahin/distill/reports/final_results_exp.md)**: Comprehensive early experiment registry and loss ablation tables.
 
 ---
 
-### 3. 🔬 Deep-Dive Architectural & Strategy Syntheses
+### 4. 🔬 Deep-Dive Architectural & Strategy Syntheses
 * **[good_review.md](file:///home/shahin/distill/reports/good_review.md)**: Senior review of KD literature, hyperparameter dynamics, and cross-domain transfer.
+* **[claude-crack-segmentation-distillation-methods.md](file:///home/shahin/distill/reports/claude-crack-segmentation-distillation-methods.md)**: Vision distillation architectures, high-resolution proto-mask preservation, and Tversky formulation.
+* **[gpt-sam_yolo_road_crack_distillation_methods.md](file:///home/shahin/distill/reports/gpt-sam_yolo_road_crack_distillation_methods.md)**: Negative-tile mining, two-stage fine-tuning schedule, and sliding-window SAHI inference.
 * **[next_moves_forOOD.md](file:///home/shahin/distill/reports/next_moves_forOOD.md)**: Strategic blueprint synthesizing Claude & GPT proposals for resolution-preserving KD, two-stage fine-tuning, and multi-scale TTA.
 * **[possibleOODimprovements.md](file:///home/shahin/distill/reports/possibleOODimprovements.md)**: Forensic data audit uncovering the zero-negative pavement crop bias in Crack500 and native $640\times360$ source dimensions.
 * **[layerKD.md](file:///home/shahin/distill/reports/layerKD.md)**: Intermediate feature distillation design, ViT-to-CNN capacity gap analysis, and Channel-Wise Distillation (CWD).
