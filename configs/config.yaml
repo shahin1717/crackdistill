@@ -85,7 +85,9 @@ distillation:
     feature:
       enabled: true
       weight: 1.8658       # tuned intermediate feature alignment weight
-      layers: [2, 5, 8]
+      method: cwd          # Channel-Wise Distillation with spatial softmax
+      temperature: 4.0
+      layers: [16, 19, 22] # true YOLOv11 neck outputs (P3, P4, P5) feeding Segment head
     boundary:
       enabled: true
       weight: 0.8055       # reduced to prevent over-memorizing crop boundary artifacts

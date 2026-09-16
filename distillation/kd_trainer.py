@@ -195,6 +195,15 @@ class KDSegmentationTrainer(SegmentationTrainer):
 
             proj_name = getattr(getattr(master_cfg, "project", None), "name", "runs")
             exp_name = getattr(getattr(master_cfg, "project", None), "experiment", "exp")
+            seed_val = int(getattr(getattr(master_cfg, "project", None), "seed", 42))
+
+            # Enforce determinism
+            import random
+            random.seed(seed_val)
+            np.random.seed(seed_val)
+            torch.manual_seed(seed_val)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed_all(seed_val)
 
             auto_overrides = {
                 "model": model_name,
@@ -207,9 +216,30 @@ class KDSegmentationTrainer(SegmentationTrainer):
                 "weight_decay": getattr(getattr(master_cfg, "train", None), "weight_decay", 0.0005),
                 "project": str(proj_name),
                 "name": str(exp_name),
+                "seed": seed_val,
                 "exist_ok": True,
                 "task": "segment",
             }
+
+            # Scientific Fix (Bug #1): Enforce geometric alignment between student inputs and offline teacher logits.
+            # Spatial scrambling (mosaic, affine, flip) without matching teacher transforms corrupts supervision coordinates.
+            is_kd_on = (hasattr(kd_cfg, "enabled") and getattr(kd_cfg, "enabled")) or (isinstance(kd_cfg, dict) and kd_cfg.get("enabled", False))
+            allow_spatial_aug = getattr(getattr(master_cfg, "train", None), "allow_spatial_aug", False)
+            if is_kd_on and not allow_spatial_aug:
+                auto_overrides.update({
+                    "mosaic": 0.0,
+                    "close_mosaic": 0,
+                    "degrees": 0.0,
+                    "translate": 0.0,
+                    "scale": 0.0,
+                    "shear": 0.0,
+                    "perspective": 0.0,
+                    "fliplr": 0.0,
+                    "flipud": 0.0,
+                    "erasing": 0.0,
+                })
+                print(f"[KD] Geometric Alignment Enforced: Spatial augmentations (mosaic, affine, flip) disabled. Seed: {seed_val}")
+
             if overrides and isinstance(overrides, dict):
                 auto_overrides.update(overrides)
 
@@ -253,6 +283,8 @@ class KDSegmentationTrainer(SegmentationTrainer):
         
         self._current_paths = []
         self._kd_logged  = False
+        self._kd_consecutive_errors = 0
+        self._kd_total_errors = 0
         self._no_logits_warned = False
         self.kd_losses   = []
         self._sam_targets = {}   # image_stem → soft target tensor (M, 256, 256)
@@ -284,9 +316,8 @@ class KDSegmentationTrainer(SegmentationTrainer):
         print(f"[KD] logit files: {len(logit_files)}")
         print(f"[KD] temperature: {self.temperature}")
 
-        is_kd_enabled = hasattr(self.kd_cfg, "enabled") and getattr(self.kd_cfg, "enabled")
-        if is_kd_enabled and len(logit_files) == 0:
-            raise RuntimeError(
+        if len(logit_files) == 0:
+            raise FileNotFoundError(
                 f"[KD FATAL ERROR] logits_dir '{self.logits_dir}' contains 0 logit files (*.npy)!\n"
                 f"Knowledge distillation cannot proceed without precomputed teacher logits.\n"
                 f"Please ensure the teacher logits dataset is attached and linked properly to '{self.logits_dir}'."
@@ -294,7 +325,7 @@ class KDSegmentationTrainer(SegmentationTrainer):
 
     def setup_model(self):
         """Build model, set up projection layers and hooks, and call parent setup."""
-        head_idx = 22
+        head_idx = 23
         is_freeze_head = hasattr(self.kd_cfg, "progressive") and self.kd_cfg.progressive.get("freeze_head", False)
 
         if is_freeze_head:
@@ -346,10 +377,13 @@ class KDSegmentationTrainer(SegmentationTrainer):
         # Determine device
         device = next(self.model.parameters()).device
 
-        # Standard layers to monitor (default 12, 15, 18 for PANet Neck if method is cwd, otherwise 2, 5, 8)
+        # Standard layers to monitor: YOLOv11 true neck outputs feeding Segment head are 16 (P3, stride 8), 19 (P4, stride 16), 22 (P5, stride 32)
         feat_method = getattr(self.kd_cfg.losses.feature, "method", "mse") if hasattr(self.kd_cfg.losses, "feature") else "mse"
-        default_layers = [12, 15, 18] if feat_method == "cwd" else [2, 5, 8]
-        layers_to_monitor = self.kd_cfg.losses.feature.layers if hasattr(self.kd_cfg.losses.feature, "layers") else default_layers
+        default_layers = [16, 19, 22]
+        layers_to_monitor = list(self.kd_cfg.losses.feature.layers) if hasattr(self.kd_cfg.losses.feature, "layers") else default_layers
+        if layers_to_monitor in ([12, 15, 18], [2, 5, 8], [4, 6, 8]):
+            print(f"[KD] Corrected legacy hooked layers {layers_to_monitor} -> [16, 19, 22] (true P3, P4, P5 neck outputs)")
+            layers_to_monitor = [16, 19, 22]
 
         captured_shapes = {}
         def temp_hook(layer_idx):
@@ -378,13 +412,23 @@ class KDSegmentationTrainer(SegmentationTrainer):
             h.remove()
 
         # Build projection layers
+        layer_target_map = {
+            16: ("feat1", 64),
+            19: ("image_embed", 256),
+            22: ("image_embed", 256),
+        }
         proj_dict = nn.ModuleDict()
         for idx in layers_to_monitor:
             if idx in captured_shapes:
                 in_channels = captured_shapes[idx][1]
                 feature_h = captured_shapes[idx][2]
-                stride = self.args.imgsz // feature_h
-                out_channels = 64 if stride <= 8 else 256
+                if idx in layer_target_map:
+                    target_key, out_channels = layer_target_map[idx]
+                    stride = 8 if out_channels == 64 else (16 if idx == 19 else 32)
+                else:
+                    img_sz = self.args.imgsz if isinstance(self.args.imgsz, int) else self.args.imgsz[0]
+                    stride = img_sz // feature_h
+                    out_channels = 64 if stride <= 8 else 256
                 
                 # Cross-Architecture Projector (CAP): 2-stage conv with BatchNorm for CWD, or 1x1 for MSE
                 if feat_method == "cwd":
@@ -412,8 +456,11 @@ class KDSegmentationTrainer(SegmentationTrainer):
         KDSegmentationTrainer.student_features.clear()
         
         feat_method = getattr(self.kd_cfg.losses.feature, "method", "mse") if hasattr(self.kd_cfg.losses, "feature") else "mse"
-        default_layers = [12, 15, 18] if feat_method == "cwd" else [2, 5, 8]
-        layers_to_monitor = self.kd_cfg.losses.feature.layers if hasattr(self.kd_cfg.losses.feature, "layers") else default_layers
+        default_layers = [16, 19, 22]
+        layers_to_monitor = list(self.kd_cfg.losses.feature.layers) if hasattr(self.kd_cfg.losses.feature, "layers") else default_layers
+        if layers_to_monitor in ([12, 15, 18], [2, 5, 8], [4, 6, 8]):
+            layers_to_monitor = [16, 19, 22]
+
         for idx in layers_to_monitor:
             if idx < len(model.model):
                 h = model.model[idx].register_forward_hook(ActiveHook(f"layer_{idx}"))
@@ -617,14 +664,16 @@ class KDSegmentationTrainer(SegmentationTrainer):
                 fg_mask_i = fg_mask[i]
                 
                 if fg_mask_i.any() and sam_logits.shape[0] > 0:
-                    mask_idx = target_gt_idx[i][fg_mask_i]
-                    mask_idx = torch.clamp(mask_idx, 0, sam_logits.shape[0] - 1)
-                    
-                    # Compute student instance predicted mask logits: (N_pos, H_proto, W_proto)
-                    pred_coefs = pred_masks[i][fg_mask_i]
+                    raw_mask_idx = target_gt_idx[i][fg_mask_i]
+
+                    # Scientific Fix (Bug #2): Strict instance index validation — eliminate silent clamping
+                    valid_idx_mask = (raw_mask_idx >= 0) & (raw_mask_idx < sam_logits.shape[0])
+                    if not valid_idx_mask.any():
+                        continue
+
+                    mask_idx = raw_mask_idx[valid_idx_mask]
+                    pred_coefs = pred_masks[i][fg_mask_i][valid_idx_mask]
                     pred_mask_logits = torch.einsum("in,nhw->ihw", pred_coefs, proto[i])
-                    
-                    # Extract corresponding SAM teacher logits: (N_pos, 256, 256)
                     sam_logits_matched = sam_logits[mask_idx]
                     
                     # Target resolution (default 256x256, or 512x512 if high_res, or native teacher res if native_res enabled)
@@ -733,12 +782,14 @@ class KDSegmentationTrainer(SegmentationTrainer):
             if self.kd_cfg.losses.feature.enabled:
                 loss_feat = torch.tensor(0.0, device=self.device)
                 feat_method = getattr(self.kd_cfg.losses.feature, "method", "mse")
-                default_layers = [12, 15, 18] if feat_method == "cwd" else [2, 5, 8]
-                layers_to_monitor = self.kd_cfg.losses.feature.layers if hasattr(self.kd_cfg.losses.feature, "layers") else default_layers
+                default_layers = [16, 19, 22]
+                layers_to_monitor = list(self.kd_cfg.losses.feature.layers) if hasattr(self.kd_cfg.losses.feature, "layers") else default_layers
+                if layers_to_monitor in ([12, 15, 18], [2, 5, 8], [4, 6, 8]):
+                    layers_to_monitor = [16, 19, 22]
                 feat_count = 0
                 
                 # Layer importance weights (P3 = 0.5, P4 = 0.3, P5 = 0.2)
-                stage_weights = {12: 0.5, 15: 0.3, 18: 0.2}
+                stage_weights = {16: 0.5, 19: 0.3, 22: 0.2}
                 
                 for idx in layers_to_monitor:
                     feat_key = f"layer_{idx}"
@@ -748,20 +799,24 @@ class KDSegmentationTrainer(SegmentationTrainer):
                         sf_proj = proj(sf)
                         
                         feature_h = sf.shape[2]
-                        stride = self.args.imgsz // feature_h
-
-                        # Map layer stride directly to SAM feature keys & channels (architecture independent)
-                        if stride <= 8:
-                            target_key = "feat1"
-                            out_channels = 64
+                        layer_target_map = {
+                            16: ("feat1", 64),
+                            19: ("image_embed", 256),
+                            22: ("image_embed", 256),
+                        }
+                        if idx in layer_target_map:
+                            target_key, out_channels = layer_target_map[idx]
                         else:
-                            target_key = "image_embed"
-                            out_channels = 256
+                            img_sz = self.args.imgsz if isinstance(self.args.imgsz, int) else self.args.imgsz[0]
+                            stride = img_sz // feature_h
+                            target_key = "feat1" if stride <= 8 else "image_embed"
+                            out_channels = 64 if stride <= 8 else 256
                         
                         # Stack SAM features for the batch (per-item spatial alignment before concat)
                         tf_list = []
+                        valid_item_indices = []
                         target_h, target_w = sf_proj.shape[2], sf_proj.shape[3]
-                        for img_path in self._current_paths:
+                        for b_idx, img_path in enumerate(self._current_paths):
                             stem = Path(img_path).stem
                             if stem in self._sam_features and target_key in self._sam_features[stem]:
                                 tf_item = self._sam_features[stem][target_key]
@@ -770,46 +825,74 @@ class KDSegmentationTrainer(SegmentationTrainer):
                                 if tf_item.shape[2:] != (target_h, target_w):
                                     tf_item = F.interpolate(tf_item, size=(target_h, target_w), mode="bilinear", align_corners=False)
                                 tf_list.append(tf_item)
-                            else:
-                                tf_list.append(torch.zeros((1, out_channels, target_h, target_w), device=self.device))
-                                
-                        tf_batch = torch.cat(tf_list, dim=0).to(dtype=sf_proj.dtype)
+                                valid_item_indices.append(b_idx)
                         
-                        if feat_method == "cwd":
-                            # Channel-Wise Distillation (Spatial Softmax per channel + KL Divergence)
-                            t_feat = float(getattr(self.kd_cfg.losses.feature, "temperature", 4.0))
-                            b, c, h, w = sf_proj.shape
-                            s_soft = F.softmax(sf_proj.view(b, c, -1) / t_feat, dim=-1)
-                            t_soft = F.softmax(tf_batch.detach().view(b, c, -1) / t_feat, dim=-1)
-                            cwd_kl = F.kl_div(s_soft.log(), t_soft, reduction="batchmean") * (t_feat ** 2)
-                            w_stage = stage_weights.get(idx, 1.0 / len(layers_to_monitor))
-                            loss_feat = loss_feat + w_stage * cwd_kl
-                            feat_count += 1
-                        else:
-                            # Standard normalized per-layer MSE
-                            loss_feat = loss_feat + F.mse_loss(sf_proj, tf_batch.detach())
-                            feat_count += 1
+                        # Scientific Fix: Only compute feature loss on samples with valid teacher features (no zero-filling uniform noise)
+                        if len(valid_item_indices) > 0:
+                            tf_batch = torch.cat(tf_list, dim=0).to(dtype=sf_proj.dtype)
+                            sf_proj_valid = sf_proj[valid_item_indices]
+                            
+                            # Ensure channel dimensions match
+                            if tf_batch.shape[1] != sf_proj_valid.shape[1]:
+                                if not self._no_logits_warned:
+                                    print(f"[KD Warning] Channel mismatch for layer {idx}: student proj {sf_proj_valid.shape[1]} vs teacher {tf_batch.shape[1]}. Skipping layer.")
+                                continue
+                            
+                            b_v, c, h, w = sf_proj_valid.shape
+                            b_t, c_t, h_t, w_t = tf_batch.shape
+                            if (h, w) != (h_t, w_t):
+                                tf_batch = F.interpolate(tf_batch, size=(h, w), mode="bilinear", align_corners=False)
+                            
+                            if feat_method == "cwd":
+                                # Channel-Wise Distillation (Spatial Softmax per channel + KL Divergence)
+                                t_feat = float(getattr(self.kd_cfg.losses.feature, "temperature", 4.0))
+                                s_soft = F.softmax(sf_proj_valid.view(b_v, c, -1) / t_feat, dim=-1)
+                                t_soft = F.softmax(tf_batch.detach().view(b_t, c_t, -1) / t_feat, dim=-1)
+                                # Scientific Fix: Normalize CWD KL divergence by channel count c
+                                cwd_kl = (F.kl_div(s_soft.log(), t_soft, reduction="batchmean") * (t_feat ** 2)) / c
+                                w_stage = stage_weights.get(idx, 1.0 / len(layers_to_monitor))
+                                loss_feat = loss_feat + w_stage * cwd_kl
+                                feat_count += 1
+                            else:
+                                # Standard normalized per-layer MSE
+                                loss_feat = loss_feat + F.mse_loss(sf_proj_valid, tf_batch.detach())
+                                feat_count += 1
                     else:
                         if feat_key not in self.student_features and not self._no_logits_warned:
                             print(f"[KD] Warning: Hook feature {feat_key} not found in student_features. "
                                   f"Forward hooks might not be triggering. Skipping feature KD.")
                             self._no_logits_warned = True
                 
-                if feat_count > 0 and feat_method != "cwd":
-                    loss_feat = loss_feat / feat_count
-                kd_losses["feature"] = loss_feat * self.kd_cfg.losses.feature.weight
+                if feat_count > 0:
+                    if feat_method != "cwd":
+                        loss_feat = loss_feat / feat_count
+                    kd_losses["feature"] = loss_feat * self.kd_cfg.losses.feature.weight
+
+            # Reset consecutive errors on successful batch computation
+            self._kd_consecutive_errors = 0
 
             # Logging demonstration on first pass
             if not self._kd_logged and kd_losses:
-                log_strs = [f"{k}: {float(v):.6f}" for k, v in kd_losses.items()]
+                log_strs = [f"{k}: {float(v.detach()):.6f}" for k, v in kd_losses.items()]
                 print(f"[KD] ✓ KD losses computed: {', '.join(log_strs)}")
                 self._kd_logged = True
 
         except Exception as e:
-            if not self._kd_logged:
-                print(f"[KD] Warning: Error computing KD loss: {e} — skipping KD this batch")
-                import traceback
-                traceback.print_exc()
-                self._kd_logged = True
+            self._kd_consecutive_errors += 1
+            self._kd_total_errors += 1
+            strict_kd = getattr(self.kd_cfg, "strict", True)
+            
+            # Fail fast if consecutive KD failures occur, preventing silent training corruption
+            if strict_kd and self._kd_consecutive_errors > 5:
+                raise RuntimeError(
+                    f"[KD Critical Error] KD loss computation failed for {self._kd_consecutive_errors} consecutive batches. "
+                    f"Last error ({type(e).__name__}): {e}. Halting training to prevent silent degeneration."
+                ) from e
+            elif self._kd_consecutive_errors <= 3 or self._kd_total_errors % 50 == 0:
+                print(f"[KD Warning] Batch KD loss error (consecutive={self._kd_consecutive_errors}, total={self._kd_total_errors}): "
+                      f"{type(e).__name__}: {e}")
+                if self._kd_consecutive_errors <= 2:
+                    import traceback
+                    traceback.print_exc()
 
         return kd_losses
