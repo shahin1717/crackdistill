@@ -23,7 +23,7 @@ sys.path.insert(0, project_root)
 os.environ["PYTHONPATH"] = project_root + os.pathsep + os.environ.get("PYTHONPATH", "")
 
 from utils.config_loader import load_config, override_config
-from distillation.trainer import CrackDistillTrainer
+from distillation.kd_trainer import KDSegmentationTrainer
 
 
 EXPERIMENTS = {
@@ -148,11 +148,9 @@ def run_experiment(exp_name: str, cfg_path: str = "configs/config.yaml"):
     cfg = override_config(cfg, {"project.name": "crack_distill", "project.experiment": exp_name})
 
     # Run training — pass overridden config directly
-    trainer = CrackDistillTrainer(cfg_path, override_cfg=cfg)
-    trainer.train()
-    results = trainer.test()
-
-    return {exp_name: results}
+    trainer = KDSegmentationTrainer(cfg=cfg)
+    results = trainer.train()
+    return {exp_name: results if results is not None else {}}
 
 
 def main():
