@@ -17,6 +17,9 @@ with open('utils/config_loader.py') as f:
 with open('distillation/kd_trainer.py') as f:
     kd_trainer_code = f.read()
 
+with open('utils/checkpoint.py') as f:
+    checkpoint_code = f.read()
+
 with open('scripts/convert_crack500.py') as f:
     convert_crack500_code = f.read()
 
@@ -84,8 +87,9 @@ def generate_training_notebook(variant_name, title, description, overrides_dict,
 """),
 
         make_cell('code', f"%%writefile configs/config.yaml\n{config_yaml}"),
-        make_cell('code', "%%writefile utils/__init__.py\n# utils package"),
+        make_cell('code', "%%writefile utils/__init__.py\n# utils package\nfrom utils.checkpoint import resolve_checkpoint, get_checkpoint_manifest, save_checkpoint_manifest\n"),
         make_cell('code', f"%%writefile utils/config_loader.py\n{config_loader_code}"),
+        make_cell('code', f"%%writefile utils/checkpoint.py\n{checkpoint_code}"),
         make_cell('code', "%%writefile distillation/__init__.py\n# distillation package"),
         make_cell('code', f"%%writefile distillation/kd_trainer.py\n{kd_trainer_code}"),
         make_cell('code', f"%%writefile scripts/convert_crack500.py\n{convert_crack500_code}"),
