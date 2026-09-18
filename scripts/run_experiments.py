@@ -23,6 +23,7 @@ sys.path.insert(0, project_root)
 os.environ["PYTHONPATH"] = project_root + os.pathsep + os.environ.get("PYTHONPATH", "")
 
 from utils.config_loader import load_config, override_config
+from utils.checkpoint import resolve_checkpoint, get_checkpoint_manifest, save_checkpoint_manifest
 from distillation.kd_trainer import KDSegmentationTrainer
 
 
@@ -150,7 +151,36 @@ def run_experiment(exp_name: str, cfg_path: str = "configs/config.yaml"):
     # Run training — pass overridden config directly
     trainer = KDSegmentationTrainer(cfg=cfg)
     results = trainer.train()
-    return {exp_name: results if results is not None else {}}
+
+    # Extract metrics cleanly into a dictionary
+    metrics_dict = {}
+    if hasattr(results, "results_dict") and isinstance(results.results_dict, dict):
+        metrics_dict = {k: float(v) if isinstance(v, (int, float)) else str(v) for k, v in results.results_dict.items()}
+    elif isinstance(results, dict):
+        metrics_dict = {k: float(v) if isinstance(v, (int, float)) else str(v) for k, v in results.items()}
+
+    # Resolve and record best checkpoint deterministically with SHA256 manifest
+    best_ckpt_candidate = getattr(trainer, "best", None) or (Path(getattr(trainer, "save_dir", "runs")) / "weights" / "best.pt")
+    if best_ckpt_candidate and Path(best_ckpt_candidate).exists():
+        try:
+            resolved_ckpt = resolve_checkpoint(best_ckpt_candidate)
+            seed_val = getattr(cfg.project, "seed", 42) if hasattr(cfg, "project") else 42
+            manifest = get_checkpoint_manifest(
+                checkpoint_path=resolved_ckpt,
+                experiment_name=exp_name,
+                seed=int(seed_val),
+                metadata={"description": exp["description"]}
+            )
+            manifest_path = save_checkpoint_manifest(manifest)
+            metrics_dict["checkpoint"] = str(resolved_ckpt)
+            metrics_dict["checkpoint_sha256"] = manifest["sha256"]
+            print(f"[KD Runner] ✓ Best checkpoint verified: {resolved_ckpt}")
+            print(f"[KD Runner] ✓ Checkpoint SHA256: {manifest['sha256']}")
+            print(f"[KD Runner] ✓ Checkpoint manifest recorded: {manifest_path}")
+        except Exception as e:
+            print(f"[KD Runner Warning] Checkpoint manifest recording skipped: {e}")
+
+    return {exp_name: metrics_dict}
 
 
 def main():
@@ -185,11 +215,14 @@ def main():
     print("="*60)
     for exp_name, metrics in all_results.items():
         print(f"\n{exp_name}:")
+        if not metrics:
+            print("  (no metrics recorded)")
+            continue
         for k, v in metrics.items():
             if isinstance(v, float):
                 print(f"  {k}: {v:.4f}")
-        else:
-            print(f"  {k}: {v}")
+            else:
+                print(f"  {k}: {v}")
 
 
 if __name__ == "__main__":

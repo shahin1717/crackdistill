@@ -449,12 +449,16 @@ print("Training completed.")
 import glob, json
 from pathlib import Path
 from ultralytics import YOLO
+from utils.checkpoint import resolve_checkpoint, get_checkpoint_manifest, save_checkpoint_manifest
 
 EXPERIMENT_NAME = "exp_mosaic_augmented_hires_layerkd_dilated_T3.7769_W0.9612_seed42_150ep"
-best_pt = glob.glob(f"runs/**/{EXPERIMENT_NAME}*/weights/best.pt", recursive=True)
-assert best_pt, f"No checkpoint found for {EXPERIMENT_NAME}!"
+candidate_ckpt = getattr(trainer, "best", None) or Path("runs") / "crack_distill" / EXPERIMENT_NAME / "weights" / "best.pt"
+best_pt_path = resolve_checkpoint(candidate_ckpt, expected_experiment=EXPERIMENT_NAME)
+manifest = get_checkpoint_manifest(best_pt_path, experiment_name=EXPERIMENT_NAME, seed=42)
+save_checkpoint_manifest(manifest)
 
-model = YOLO(best_pt[0])
+model = YOLO(str(best_pt_path))
+print(f"Evaluating verified checkpoint: {best_pt_path} (SHA256: {manifest['sha256']})")
 print("\\n--- In-Domain Cropped Validation ---")
 val_yaml = "data/datasets/crack500_yolo_augmented/dataset.yaml"
 for cand in [
@@ -591,12 +595,16 @@ print("Training completed.")
 import glob, json
 from pathlib import Path
 from ultralytics import YOLO
+from utils.checkpoint import resolve_checkpoint, get_checkpoint_manifest, save_checkpoint_manifest
 
 EXPERIMENT_NAME = "exp_twostage_mosaic_native_tune_seed42_50ep"
-best_pt = glob.glob(f"runs/**/{EXPERIMENT_NAME}*/weights/best.pt", recursive=True)
-assert best_pt, f"No checkpoint found for {EXPERIMENT_NAME}!"
+candidate_ckpt = getattr(trainer, "best", None) or Path("runs") / "crack_distill" / EXPERIMENT_NAME / "weights" / "best.pt"
+best_pt_path = resolve_checkpoint(candidate_ckpt, expected_experiment=EXPERIMENT_NAME)
+manifest = get_checkpoint_manifest(best_pt_path, experiment_name=EXPERIMENT_NAME, seed=42)
+save_checkpoint_manifest(manifest)
 
-model = YOLO(best_pt[0])
+model = YOLO(str(best_pt_path))
+print(f"Evaluating verified checkpoint: {best_pt_path} (SHA256: {manifest['sha256']})")
 print("\\n--- In-Domain Cropped Validation ---")
 val_yaml = "data/datasets/crack500_yolo_augmented/dataset.yaml"
 for cand in [
@@ -732,12 +740,16 @@ print("Training completed.")
 import glob, json
 from pathlib import Path
 from ultralytics import YOLO
+from utils.checkpoint import resolve_checkpoint, get_checkpoint_manifest, save_checkpoint_manifest
 
 EXPERIMENT_NAME = "exp_resolution_preserving_mask_kd_T3.7769_W0.9612_seed42_150ep"
-best_pt = glob.glob(f"runs/**/{EXPERIMENT_NAME}*/weights/best.pt", recursive=True)
-assert best_pt, f"No checkpoint found for {EXPERIMENT_NAME}!"
+candidate_ckpt = getattr(trainer, "best", None) or Path("runs") / "crack_distill" / EXPERIMENT_NAME / "weights" / "best.pt"
+best_pt_path = resolve_checkpoint(candidate_ckpt, expected_experiment=EXPERIMENT_NAME)
+manifest = get_checkpoint_manifest(best_pt_path, experiment_name=EXPERIMENT_NAME, seed=42)
+save_checkpoint_manifest(manifest)
 
-model = YOLO(best_pt[0])
+model = YOLO(str(best_pt_path))
+print(f"Evaluating verified checkpoint: {best_pt_path} (SHA256: {manifest['sha256']})")
 print("\\n--- In-Domain Cropped Validation ---")
 val_yaml = "data/datasets/crack500_yolo_augmented/dataset.yaml"
 for cand in [
@@ -875,12 +887,16 @@ print("Training completed.")
 import glob, json
 from pathlib import Path
 from ultralytics import YOLO
+from utils.checkpoint import resolve_checkpoint, get_checkpoint_manifest, save_checkpoint_manifest
 
 EXPERIMENT_NAME = "exp_asymmetric_tversky_kd_T3.7769_W0.9612_seed42_150ep"
-best_pt = glob.glob(f"runs/**/{EXPERIMENT_NAME}*/weights/best.pt", recursive=True)
-assert best_pt, f"No checkpoint found for {EXPERIMENT_NAME}!"
+candidate_ckpt = getattr(trainer, "best", None) or Path("runs") / "crack_distill" / EXPERIMENT_NAME / "weights" / "best.pt"
+best_pt_path = resolve_checkpoint(candidate_ckpt, expected_experiment=EXPERIMENT_NAME)
+manifest = get_checkpoint_manifest(best_pt_path, experiment_name=EXPERIMENT_NAME, seed=42)
+save_checkpoint_manifest(manifest)
 
-model = YOLO(best_pt[0])
+model = YOLO(str(best_pt_path))
+print(f"Evaluating verified checkpoint: {best_pt_path} (SHA256: {manifest['sha256']})")
 print("\\n--- In-Domain Cropped Validation ---")
 val_yaml = "data/datasets/crack500_yolo_augmented/dataset.yaml"
 for cand in [

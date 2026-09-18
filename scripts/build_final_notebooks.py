@@ -192,15 +192,20 @@ print("✓ Training completed successfully!")
 """),
 
         make_cell('code', f"""# ── Step 4: Validate Best Checkpoint & Export Results ──
-import glob, json, os
+import json, os
 from pathlib import Path
 from ultralytics import YOLO
+from utils.checkpoint import resolve_checkpoint, get_checkpoint_manifest, save_checkpoint_manifest
 
-best_pt = glob.glob(f"runs/**/{{EXPERIMENT_NAME}}*/weights/best.pt", recursive=True)
-assert best_pt, f"No checkpoint found for {{EXPERIMENT_NAME}}! Check run directory."
+# Deterministically resolve checkpoint without fuzzy glob collision
+candidate_ckpt = getattr(trainer, "best", None) or Path("runs") / "crack_distill" / EXPERIMENT_NAME / "weights" / "best.pt"
+best_pt_path = resolve_checkpoint(candidate_ckpt, expected_experiment=EXPERIMENT_NAME)
+manifest = get_checkpoint_manifest(best_pt_path, experiment_name=EXPERIMENT_NAME, seed={seed})
+manifest_file = save_checkpoint_manifest(manifest)
 
-print(f"Evaluating best checkpoint: {{best_pt[0]}}")
-model = YOLO(best_pt[0])
+print(f"Evaluating verified checkpoint: {{best_pt_path}}")
+print(f"Checkpoint SHA256: {{manifest['sha256']}}")
+model = YOLO(str(best_pt_path))
 
 # 1. Validate on Crack500 In-Domain Val Set
 print("\\n--- In-Domain Cropped Validation ---")
@@ -209,7 +214,8 @@ val_metrics = model.val(data="data/datasets/crack500_yolo/dataset.yaml", split="
 results = {{
     "experiment": "{exp_name}",
     "seed": {seed},
-    "checkpoint": best_pt[0],
+    "checkpoint": str(best_pt_path),
+    "checkpoint_sha256": manifest["sha256"],
     "metrics_indomain": {{
         "mask_mAP50": float(val_metrics.seg.map50),
         "mask_mAP50_95": float(val_metrics.seg.map),
