@@ -34,14 +34,20 @@ Every notebook is **100% self-contained and decoupled**, embedding exact asserti
 
 | # | Notebook | Purpose & Recipe | Expected Runtime | Output Summary |
 | :-: | :--- | :--- | :---: | :--- |
-| **01** | **[`01_run_mask_kd_production_seed42.ipynb`](final_notebooks/01_run_mask_kd_production_seed42.ipynb)** | **Locked Baseline (Seed 42)**: Uniform Mask-KL ($\tau=3.7769, W=0.9612$, box prompts, FP32). | ~2.5–3.0 hrs | `results/prod_mask_kd_box_only_T3.7769_W0.9612_seed42_150ep.json` |
+| **00** | **[`00_run_baseline_clean_seed42.ipynb`](final_notebooks/00_run_baseline_clean_seed42.ipynb)** | **Clean Baseline Control (Seed 42)**: Lower bound — pure YOLOv11n-seg fine-tuned without KD. | ~2.5–3.0 hrs | `results/baseline_finetune_clean_seed42_150ep.json` |
+| **01** | **[`01_run_full_kd_box_seed42.ipynb`](final_notebooks/01_run_full_kd_box_seed42.ipynb)** | **Full KD Pipeline — Box Prompts**: Full composite KD (Mask-KL $W=0.9612$, Neck CWD on layers [16, 19, 22] $W=1.8658$, Boundary $W=0.8055$). | ~2.8–3.2 hrs | `results/full_kd_box_T3.7769_W0.9612_CWD_BND_seed42_150ep.json` |
+| **01b** | **[`01b_run_full_kd_centroid_seed42.ipynb`](final_notebooks/01b_run_full_kd_centroid_seed42.ipynb)** | **Full KD Pipeline — Centroid Prompts**: Full composite KD with Box + Centroid point prompt supervision. | ~2.8–3.2 hrs | `results/full_kd_centroid_T3.7769_W0.9612_CWD_BND_seed42_150ep.json` |
+| **01c** | **[`01_run_mask_kd_production_seed42.ipynb`](final_notebooks/01_run_mask_kd_production_seed42.ipynb)** | **Isolated Mask-KL Baseline (Seed 42)**: Uniform Mask-KL only ($\tau=3.7769, W=0.9612$, box prompts, FP32). | ~2.5–3.0 hrs | `results/prod_mask_kd_box_only_T3.7769_W0.9612_seed42_150ep.json` |
 | **02** | **[`02_run_mask_kd_production_seed123.ipynb`](final_notebooks/02_run_mask_kd_production_seed123.ipynb)** | **Multi-Seed Verification (Seed 123)**: Variance testing for statistical defense. | ~2.5–3.0 hrs | `results/prod_mask_kd_box_only_T3.7769_W0.9612_seed123_150ep.json` |
 | **03** | **[`03_run_foreground_dilated_kd.ipynb`](final_notebooks/03_run_foreground_dilated_kd.ipynb)** | **Research Variant 1 (Foreground-Dilated KL)**: Focuses gradient on crack core + 8px context band (eliminates 99% asphalt background dilution). | ~2.5–3.0 hrs | `results/exp_foreground_dilated_mask_kd_T3.7769_W0.9612_seed42_150ep.json` |
 | **04** | **[`04_run_pixel_affinity_kd.ipynb`](final_notebooks/04_run_pixel_affinity_kd.ipynb)** | **Research Variant 2 (Spatial Pixel Affinity)**: Captures topological crack continuity via 4-directional spatial difference matching. | ~2.5–3.0 hrs | `results/exp_pixel_affinity_kd_T3.7769_W0.9612_seed42_150ep.json` |
 | **05** | **[`05_run_multiscale_mask_kd.ipynb`](final_notebooks/05_run_multiscale_mask_kd.ipynb)** | **Research Variant 3 (512x512 High-Res Matching)**: Full $512 \times 512$ sub-pixel logit alignment. | ~2.5–3.0 hrs | `results/exp_multiscale_512_mask_kd_T3.7769_W0.9612_seed42_150ep.json` |
-| **06** | **[`06_run_multiscale_layer_kd.ipynb`](final_notebooks/06_run_multiscale_layer_kd.ipynb)** | **Research Variant 4 (Multi-Scale Neck LayerKD)**: Channel-Wise Distillation (CWD) on PANet Neck layers (12, 15, 18). | ~2.8–3.2 hrs | `results/exp_multiscale_layer_cwd_kd_T3.7769_W0.9612_seed42_150ep.json` |
+| **06** | **[`06_run_multiscale_layer_kd.ipynb`](final_notebooks/06_run_multiscale_layer_kd.ipynb)** | **Research Variant 4 (Multi-Scale Neck LayerKD)**: Channel-Wise Distillation (CWD) on PANet Neck layers (16, 19, 22). | ~2.8–3.2 hrs | `results/exp_multiscale_layer_cwd_kd_T3.7769_W0.9612_seed42_150ep.json` |
 | **07** | **[`07_eval_ood_and_tiled_inference.ipynb`](final_notebooks/07_eval_ood_and_tiled_inference.ipynb)** | **Deployment Evaluation**: Compares direct resizing vs. tiled sliding-window inference ($512 \times 512$ native patches). | ~5–10 mins | `results/ood_eval_summary.json` |
 | **08** | **[`08_benchmark_speed_and_profile.ipynb`](final_notebooks/08_benchmark_speed_and_profile.ipynb)** | **Speed Benchmark**: Confirms 0% latency/parameter overhead (>100 FPS, 2.84M params, 10.2 GFLOPs). | ~2 mins | Latency & Throughput Report |
+| **09a** | **[`09_run_combined_affinity_dilated_kd.ipynb`](final_notebooks/09_run_combined_affinity_dilated_kd.ipynb)** | **Research Variant 5 (Combined Affinity + Dilated)**: Multi-loss combination. | ~2.8–3.2 hrs | `results/exp_combined_affinity_dilated_kd_T3.7769_W0.9612_seed42_150ep.json` |
+| **09b** | **[`09_run_focal_mask_kd.ipynb`](final_notebooks/09_run_focal_mask_kd.ipynb)** | **Research Variant 6 (Focal Mask-KL)**: Soft focal modulation ($\gamma=2.0$). | ~2.5–3.0 hrs | `results/exp_focal_mask_kd_gamma2.0_T3.7769_W0.9612_seed42_150ep.json` |
+| **10** | **[`10_run_layerkd_dilated_hires.ipynb`](final_notebooks/10_run_layerkd_dilated_hires.ipynb)** | **Ultimate OOD Candidate (768px LayerKD + Dilated)**: Multi-scale Neck CWD + Foreground Dilated Mask-KL at $768 \times 768$. | ~3.0–3.5 hrs | `results/exp_hires_layerkd_dilated_768_T3.7769_W0.9612.json` |
 
 ---
 
@@ -49,8 +55,10 @@ Every notebook is **100% self-contained and decoupled**, embedding exact asserti
 
 | Notebook | Kaggle Dataset | Model Weights | Accelerator | Internet |
 | :--- | :--- | :--- | :---: | :---: |
-| **01 – 06 (Training)** | `distill_datasetforme` (or Crack500 raw + teacher logits) | Auto-downloads `yolo11n-seg.pt` | **GPU T4 x2** or **P100** | **ON** |
-| **07 (OOD & Tiled Eval)** | `distill_datasetforme` (uncropped `valdata`/`testdata`) | Attach output `best.pt` from Notebook 01–06 | **GPU** or **CPU** | **ON** |
+| **00 (Baseline)** | `distill_datasetforme` (or Crack500 raw/YOLO format) | Auto-downloads `yolo11n-seg.pt` | **GPU T4 x2** or **P100** | **ON** |
+| **01, 01b (Full KD)** | `distill_datasetforme` (Crack500 raw + teacher logits) | Auto-downloads `yolo11n-seg.pt` | **GPU T4 x2** or **P100** | **ON** |
+| **01c – 06, 09, 10 (KD Variants)** | `distill_datasetforme` (or Crack500 raw + teacher logits) | Auto-downloads `yolo11n-seg.pt` | **GPU T4 x2** or **P100** | **ON** |
+| **07 (OOD & Tiled Eval)** | `distill_datasetforme` (uncropped `valdata`/`testdata`) | Attach output `best.pt` from Notebook 00–10 | **GPU** or **CPU** | **ON** |
 | **08 (Speed Benchmark)** | *None needed* | Auto-downloads `yolo11n-seg.pt` or uses `best.pt` | **GPU** or **CPU** | **ON** |
 
 ---
