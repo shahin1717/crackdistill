@@ -135,18 +135,26 @@ EXPERIMENTS = {
 }
 
 
-def run_experiment(exp_name: str, cfg_path: str = "configs/config.yaml"):
+def run_experiment(exp_name: str, cfg_path: str = "configs/config.yaml", data_path: str = None):
     exp = EXPERIMENTS[exp_name]
     print(f"\n{'='*60}")
     print(f"Experiment: {exp_name}")
     print(f"Description: {exp['description']}")
     print(f"Overrides: {exp['overrides']}")
+    if data_path:
+        print(f"Data override: {data_path}")
     print(f"{'='*60}\n")
 
     # Load base config and apply overrides
     cfg = load_config(cfg_path)
     cfg = override_config(cfg, exp["overrides"])
     cfg = override_config(cfg, {"project.name": "crack_distill", "project.experiment": exp_name})
+    if data_path:
+        # Override dataset path
+        if hasattr(cfg, "data") and hasattr(cfg.data, "datasets") and len(cfg.data.datasets) > 0:
+            cfg.data.datasets[0].path = data_path
+        else:
+            cfg = override_config(cfg, {"data.datasets.0.path": data_path})
 
     # Run training — pass overridden config directly
     trainer = KDSegmentationTrainer(cfg=cfg)
@@ -193,6 +201,7 @@ def main():
         help="Experiment to run"
     )
     parser.add_argument("--cfg", type=str, default="configs/config.yaml")
+    parser.add_argument("--data", type=str, default=None, help="Path to dataset.yaml or dataset directory")
     args = parser.parse_args()
 
     if args.exp == "all":
@@ -206,7 +215,7 @@ def main():
 
     all_results = {}
     for exp_name in exps:
-        results = run_experiment(exp_name, args.cfg)
+        results = run_experiment(exp_name, args.cfg, data_path=args.data)
         all_results.update(results)
         print(f"\n✓ {exp_name} done: {results}\n")
 

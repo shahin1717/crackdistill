@@ -147,17 +147,29 @@ class KDSegmentationTrainer(SegmentationTrainer):
 
             check_data = (overrides.get("data") if overrides and isinstance(overrides, dict) else None) or data_path
             if check_data and not Path(check_data).exists():
-                alt = Path("data/datasets/combined_yolo/dataset.yaml")
-                if alt.exists():
-                    check_data = str(alt)
-                    data_path = check_data
-                    if overrides and isinstance(overrides, dict) and "data" in overrides:
-                        overrides["data"] = check_data
-                elif os.path.exists("data/datasets/crack500_yolo/dataset.yaml"):
-                    check_data = "data/datasets/crack500_yolo/dataset.yaml"
-                    data_path = check_data
-                    if overrides and isinstance(overrides, dict) and "data" in overrides:
-                        overrides["data"] = check_data
+                # Check local alternatives
+                for alt_candidate in [
+                    Path("data/datasets/combined_yolo/dataset.yaml"),
+                    Path("data/datasets/crack500_yolo/dataset.yaml"),
+                ]:
+                    if alt_candidate.exists():
+                        check_data = str(alt_candidate)
+                        data_path = check_data
+                        break
+
+                # Auto-detect datasets in Kaggle input mount (/kaggle/input/**/dataset.yaml)
+                if not Path(check_data).exists() and Path("/kaggle/input").exists():
+                    kaggle_yamls = sorted(list(Path("/kaggle/input").glob("**/dataset.yaml")))
+                    if kaggle_yamls:
+                        # Prefer crack500 or combined or distill datasets
+                        preferred = [y for y in kaggle_yamls if any(k in str(y).lower() for k in ["crack500", "combined", "distill"])]
+                        chosen_yaml = preferred[0] if preferred else kaggle_yamls[0]
+                        check_data = str(chosen_yaml)
+                        data_path = check_data
+                        print(f"[KD] Auto-detected Kaggle dataset: {chosen_yaml}")
+
+                if overrides and isinstance(overrides, dict) and "data" in overrides:
+                    overrides["data"] = check_data
 
             # Safely fix hardcoded absolute paths in dataset.yaml.
             # The dataset folder may be a symlink to a read-only /kaggle/input path,
@@ -290,7 +302,24 @@ class KDSegmentationTrainer(SegmentationTrainer):
 
         logit_files = list(self.logits_dir.glob("*.npy"))
         if len(logit_files) == 0:
-            for candidate in [Path("/tmp") / self.logits_dir.name, Path("/tmp/teacher_logits_box"), Path("/tmp/teacher_logits")]:
+            candidates = [
+                Path("/tmp") / self.logits_dir.name,
+                Path("/tmp/teacher_logits_box"),
+                Path("/tmp/teacher_logits"),
+            ]
+            if Path("/kaggle/input").exists():
+                candidates.extend([
+                    Path("/kaggle/input/teacher-logits-box/teacher_logits"),
+                    Path("/kaggle/input/teacher_logits_box/teacher_logits"),
+                    Path("/kaggle/input/teacher-logits-box"),
+                    Path("/kaggle/input/teacher_logits_box"),
+                    Path("/kaggle/input/teacher_logits"),
+                ])
+                for d in Path("/kaggle/input").glob("**/*logits*"):
+                    if d.is_dir() and d not in candidates:
+                        candidates.append(d)
+
+            for candidate in candidates:
                 if candidate.exists():
                     c_files = list(candidate.glob("*.npy"))
                     if len(c_files) > 0:
@@ -298,6 +327,7 @@ class KDSegmentationTrainer(SegmentationTrainer):
                         self.logits_dir = candidate
                         logit_files = c_files
                         try:
+                            import shutil
                             p_local = Path(str(logits_dir))
                             if not p_local.exists() or (p_local.is_dir() and not list(p_local.glob("*.npy"))):
                                 if os.path.lexists(p_local):

@@ -61,6 +61,31 @@ try:
                 elif hasattr(master_cfg.data, "path"):
                     d_p = master_cfg.data.path
                     data_path = d_p if str(d_p).endswith(".yaml") else os.path.join(d_p, "dataset.yaml")
+            elif isinstance(master_cfg, dict) and "data" in master_cfg:
+                d_dict = master_cfg["data"]
+                if "datasets" in d_dict and len(d_dict["datasets"]) > 0:
+                    d_p = d_dict["datasets"][0].get("path", data_path) if isinstance(d_dict["datasets"][0], dict) else getattr(d_dict["datasets"][0], "path", data_path)
+                    data_path = d_p if str(d_p).endswith(".yaml") else os.path.join(d_p, "dataset.yaml")
+
+            check_data = (overrides.get("data") if overrides and isinstance(overrides, dict) else None) or data_path
+            if check_data and not Path(check_data).exists():
+                for alt_candidate in [
+                    Path("data/datasets/combined_yolo/dataset.yaml"),
+                    Path("data/datasets/crack500_yolo/dataset.yaml"),
+                ]:
+                    if alt_candidate.exists():
+                        check_data = str(alt_candidate)
+                        data_path = check_data
+                        break
+
+                if not Path(check_data).exists() and Path("/kaggle/input").exists():
+                    kaggle_yamls = sorted(list(Path("/kaggle/input").glob("**/dataset.yaml")))
+                    if kaggle_yamls:
+                        preferred = [y for y in kaggle_yamls if any(k in str(y).lower() for k in ["crack500", "combined", "distill"])]
+                        chosen_yaml = preferred[0] if preferred else kaggle_yamls[0]
+                        check_data = str(chosen_yaml)
+                        data_path = check_data
+                        print(f"[KD Patch] Auto-detected Kaggle dataset: {chosen_yaml}")
 
             proj_name = getattr(getattr(master_cfg, "project", None), "name", "runs")
             exp_name = getattr(getattr(master_cfg, "project", None), "experiment", "exp")
