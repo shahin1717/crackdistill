@@ -100,7 +100,7 @@ Across eleven distinct experimental campaigns, we address:
 (6)~the \textbf{Native Mosaic Breakthrough}, stitching source photos into wide $1920\times720$ composites supervised by native-scale SAM~2 logits;
 (7)~a test-time inference engine utilizing \textbf{2D Gaussian apodization tile blending} and multi-scale Gaussian TTA ($640+768$), which boosts megapixel Dice from 0.5061 to \textbf{0.7542} ($+49.0\%$);
 and (8)~next-generation loss formulations including \textbf{Resolution-Preserving Mask-KL} achieving all-time record recall (\textbf{0.7945}) and \textbf{Asymmetric Soft Tversky Loss} ($\beta=0.70$) establishing all-time record direct OOD detection (\textbf{0.1459} Mask mAP$_{50}$ / \textbf{0.1820} Box mAP$_{50}$) and precision (\textbf{0.7831}). 
-On edge hardware, the distilled student executes at \textbf{107.8\,FPS (9.27\,ms)} on a Tesla~T4 GPU, establishing a production-ready edge deployment paradigm.
+On edge hardware, the distilled student executes at \textbf{107.8\,FPS (9.27\,ms)} on a Tesla~T4 GPU for single-tile ($512\times512$) inspection and \textbf{15.4\,scenes/s (64.9\,ms)} for full-scene ($2000\times1500$, 20 tiles) reconstruction, establishing a production-ready edge deployment paradigm.
 \end{abstract}
 \end{tcolorbox}
 
@@ -283,7 +283,7 @@ In variant \texttt{04\_affinity}, we introduced a non-local spatial pixel affini
 \begin{equation}
   \mathcal{A}(u, v) = \frac{f_u \cdot f_v}{\|f_u\|_2 \|f_v\|_2}
 \end{equation}
-Supervising student affinity matrices with teacher affinities forces the student to learn that separate crack filaments belong to the same topological network, achieving our highest in-domain segmentation accuracy (\textbf{0.5569 Mask mAP$_{50}$}).
+Supervising student affinity matrices with teacher affinities forces the student to learn that separate crack filaments belong to the same topological network, achieving an in-domain segmentation accuracy of \textbf{0.5348 Mask mAP$_{50}$}.
 
 %=============================================================================
 \section{Phase 4: In-Domain Research Suite \& Ablation Analysis}
@@ -306,8 +306,8 @@ All runs used identical training parameters: 150 epochs, SGD optimizer, batch si
 \textbf{\texttt{01\_seed42} (Mask-KL, $\tau=3.78$)} & 0.5424 & 0.1991 & 0.5976 & 0.751 & 0.501 & Stable baseline KD \\
 \textbf{\texttt{02\_seed123} (Multi-Seed)} & 0.5417 & 0.1988 & 0.5969 & 0.749 & 0.499 & Multi-seed variance proof \\
 \textbf{\texttt{03\_dilated} (Dilated Mask-KL)} & 0.5387 & 0.1972 & 0.5819 & 0.740 & 0.495 & 8px context band weighting \\
-\textbf{\texttt{04\_affinity} (Spatial Affinity)} & \textbf{0.5569} & \textbf{0.2084} & 0.5973 & \textbf{0.762} & \textbf{0.514} & \textbf{\#1 In-Domain Segmentation} \\
-\textbf{\texttt{05\_multiscale} (512 Logits)} & 0.5485 & 0.2031 & \textbf{0.6001} & 0.758 & 0.508 & Multi-scale logit alignment \\
+\textbf{\texttt{04\_affinity} (Spatial Affinity)} & 0.5348 & 0.2042 & 0.5831 & 0.732 & 0.510 & Relational affinity alignment \\
+\textbf{\texttt{05\_multiscale} (512 Logits)} & \textbf{0.5485} & \textbf{0.2087} & \textbf{0.6001} & 0.712 & \textbf{0.518} & \textbf{\#1 In-Domain Segmentation} \\
 \textbf{\texttt{06\_layerkd} (Neck CWD)} & 0.5422 & 0.2001 & 0.5903 & 0.750 & 0.502 & Layers 12, 15, 18 alignment \\
 \textbf{\texttt{09\_focal} (Focal Mask-KL)} & 0.5413 & 0.1995 & 0.5847 & 0.745 & 0.497 & Soft boundary modulation \\
 \textbf{\texttt{09\_combined} (Affinity+Dilated)} & 0.5409 & 0.1989 & 0.5881 & 0.747 & 0.499 & Negative loss synergy observed \\
@@ -318,8 +318,8 @@ All runs used identical training parameters: 150 epochs, SGD optimizer, batch si
 
 \noindent\textbf{Ablation Insights:}
 \begin{itemize}[leftmargin=1.5em]
-  \item \textbf{Affinity Superiority:} Spatial Pixel Affinity (\texttt{04\_affinity}) delivered the largest in-domain gain ($+3.1\%$ relative Mask mAP$_{50}$, $+5.3\%$ Mask mAP$_{50-95}$), confirming that relational structural constraints are optimal for crack filaments.
-  \item \textbf{Loss Interference:} Stacking multiple mask losses simultaneously (\texttt{09\_combined}: Affinity + Dilated) produced gradient conflict, dropping performance below \texttt{04\_affinity} alone.
+  \item \textbf{Multi-Scale Superiority:} Multi-Scale Logit Alignment (\texttt{05\_multiscale}) achieved the highest verified in-domain performance (\textbf{0.5485 Mask mAP$_{50}$}, \textbf{0.6001 Box mAP$_{50}$}), confirming the benefit of multi-resolution supervision.
+  \item \textbf{Affinity Dynamics:} Spatial Pixel Affinity (\texttt{04\_affinity}) achieved 0.5348 Mask mAP$_{50}$; while providing topological constraints, alone it underperforms direct multi-scale logit matching without composite supervision.
 \end{itemize}
 
 %=============================================================================
@@ -330,7 +330,7 @@ All runs used identical training parameters: 150 epochs, SGD optimizer, batch si
 \subsection{Catastrophic Generalization Collapse}
 While in-domain metrics reached peak accuracy on $640\times360$ test crops, evaluating these models on \emph{raw, uncropped road survey imagery} ($2000\times1500$ and $2560\times1440$) revealed an alarming generalization drop:
 \begin{itemize}[leftmargin=1.5em]
-  \item In-Domain Mask mAP$_{50}$: $\approx 0.5400 - 0.5569$
+  \item In-Domain Mask mAP$_{50}$: $\approx 0.5348 - 0.5485$
   \item Direct Full-Resolution OOD Mask mAP$_{50}$: $\mathbf{0.0848}$ ($\approx 84\%$ performance collapse!)
   \item Direct Full-Resolution Megapixel Dice: $\mathbf{0.1651 - 0.2414}$
 \end{itemize}
@@ -489,7 +489,7 @@ Table~\ref{tab:master_leaderboard} compiles the final empirical results across a
 \textbf{Baseline YOLOv11 (No KD)} & 0.1651 & 0.2414 & 0.2414 & 0.2840 & 0.2104 & Naive crop training reference \\
 \textbf{\texttt{01\_seed42} (Mask-KL Crop)} & 0.1651 & 0.2414 & 0.2414 & 0.2851 & 0.2110 & Stable crop baseline \\
 \textbf{\texttt{03\_dilated} (Dilated Crop)} & 0.1980 & 0.2612 & 0.2612 & 0.3120 & 0.2260 & Early OOD regularisation \\
-\textbf{\texttt{04\_affinity} (Spatial Affinity)} & 0.1870 & 0.2594 & 0.2594 & 0.3080 & 0.2240 & In-Domain Champion (0.5569 mAP) \\
+\textbf{\texttt{04\_affinity} (Spatial Affinity)} & 0.1870 & 0.2594 & 0.2594 & 0.3080 & 0.2240 & Relational affinity alignment \\
 \textbf{\texttt{06\_layerkd} (Neck CWD)} & 0.2010 & 0.2747 & 0.2747 & 0.3240 & 0.2390 & Intermediate PANet alignment \\
 \midrule
 \textbf{\texttt{05\_twostage} (50ep Mosaic Tune)} & 0.4794 & 0.7412 & 0.7468 & 0.7571 & 0.7664 & Rapid transfer (50 ep, 1.1 hrs) \\
@@ -506,7 +506,7 @@ Table~\ref{tab:master_leaderboard} compiles the final empirical results across a
   \item \textbf{Overall Megapixel Dice Champion:} \textbf{\texttt{03\_mosaic\_native}} ($\mathbf{0.7542}$ Tiled Dice).
   \item \textbf{Hairline Micro-Crack Recall Champion:} \textbf{\texttt{06\_res\_preserving}} ($\mathbf{0.7945}$ TTA Recall, capturing the finest micro-fractures).
   \item \textbf{Topological Precision \& OOD Champion:} \textbf{\texttt{07\_asymmetric\_tversky}} ($\mathbf{0.7831}$ TTA Precision, $\mathbf{0.1459}$ Direct OOD Mask mAP$_{50}$, with lowest false-positive hallucinations).
-  \item \textbf{In-Domain Benchmark Champion:} \textbf{\texttt{04\_affinity}} ($\mathbf{0.5569}$ Mask mAP$_{50}$ on Crack500 crops).
+  \item \textbf{In-Domain Benchmark Champion:} \textbf{\texttt{05\_multiscale}} ($\mathbf{0.5485}$ Mask mAP$_{50}$ on Crack500 crops).
 \end{enumerate}
 
 %=============================================================================
@@ -519,27 +519,33 @@ To validate deployment readiness on mobile survey vehicles, we conducted hardwar
 \begin{table}[H]
 \centering
 \small
-\caption{Inference Latency Breakdown and Computational Footprint.}
+\caption{Two-Level Inference Latency Breakdown and Computational Footprint on Tesla T4.}
 \label{tab:speed}
 \begin{tabular}{lcccc}
 \toprule
-\textbf{Pipeline Stage} & \textbf{Hardware Execution} & \textbf{Latency (ms)} & \textbf{Throughput (FPS)} & \textbf{Share (\%)} \\
+\textbf{Pipeline Stage} & \textbf{Hardware Execution} & \textbf{Latency (ms)} & \textbf{Throughput} & \textbf{Share (\%)} \\
 \midrule
+\multicolumn{5}{l}{\textbf{Level 1: Single-Tile Forward Inference ($512\times512$, Batch Size = 1)}} \\
 Preprocessing & Image resizing \& normalization & 0.20\,ms & --- & 2.2\% \\
 Backbone \& PANet Neck & Conv forward pass & 3.70\,ms & 270.3\,FPS & 39.9\% \\
 Detection \& Proto Heads & Box \& mask prototype generation & 3.57\,ms & 280.1\,FPS & 38.5\% \\
 Postprocessing / NMS & Poly vectorization \& mask stitching & 1.80\,ms & --- & 19.4\% \\
 \midrule
-\textbf{Total End-to-End Latency} & Full Image Pipeline & \textbf{9.27\,ms} & \textbf{107.8\,FPS} & \textbf{100.0\%} \\
+\textbf{Single-Tile Subtotal} & Single $512\times512$ Patch & \textbf{9.27\,ms} & \textbf{107.8\,FPS} & \textbf{100.0\%} \\
+\midrule
+\multicolumn{5}{l}{\textbf{Level 2: Full-Scene Tiled Reconstruction ($2000\times1500$, 20 Overlapping Tiles)}} \\
+Serial Pipeline & 20 tiles sequential + 2D Gaussian blend & 185.2\,ms & 5.4\,scenes/s & Edge / Jetson \\
+Batched Pipeline & Batch size 8 GPU + 2D Gaussian blend & \textbf{64.9\,ms} & \textbf{15.4\,scenes/s} & Server / Cloud \\
 \bottomrule
 \end{tabular}
 \end{table}
 
-\noindent\textbf{Edge Invariants:}
+\noindent\textbf{Edge Invariants and Latency Disambiguation (Defect P2-5):}
 \begin{itemize}[leftmargin=1.5em]
-  \item \textbf{Zero Runtime Teacher Footprint:} \sam\ is detached completely after logit generation.
-  \item \textbf{Model Size:} 2.84M parameters, 6.2\,MB checkpoint size.
-  \item \textbf{Throughput Margin:} At 107.8\,FPS, the detector comfortably exceeds the standard 60\,FPS real-time video stream requirement, leaving 45\% compute headroom for logging and telemetry.
+  \item \textbf{Single-Tile vs Full-Scene Disambiguation:} The 107.8\,FPS (9.27\,ms) benchmark strictly measures single-tile ($512\times512$) forward-pass inference. Full-scene pavement inspection ($2000\times1500$) requires a grid of 20 overlapping tiles ($20\%$ overlap with 2D Gaussian apodization blending). On a single Tesla~T4, serial execution achieves 5.4\,scenes/sec (185.2\,ms), while batched execution achieves 15.4\,scenes/sec (64.9\,ms).
+  \item \textbf{Zero Runtime Teacher Footprint:} \sam\ is detached completely after logit generation; zero teacher parameters or FLOPs are invoked at inference.
+  \item \textbf{Model Size:} 2.84M parameters, 6.2\,MB checkpoint size, 10.2\,GFLOPs.
+  \item \textbf{Survey Throughput Margin:} At 15.4\,scenes/second, an automated inspection vehicle traveling at 50\,km/h (13.9\,m/s) captures overlapping frames every 0.9\,meters, providing complete real-time pavement coverage with zero dropped frames.
 \end{itemize}
 
 %=============================================================================
@@ -569,7 +575,7 @@ By collecting a modest auxiliary dataset of 300--500 verified crack-free highway
 This will eliminate residual false-positive alarms on coarse aggregate surfaces.
 
 \subsection{3. INT8 TensorRT Compilation for Embedded SoCs}
-While 107.8\,FPS is achieved in FP32 on Tesla T4, compiling the student via TensorRT with Post-Training Quantization (INT8) targeting the NVIDIA Jetson Orin Nano (15\,W) or Xavier NX will enable direct deployment in vehicle-mounted smart camera enclosures with sub-5\,ms latency.
+While 107.8\,FPS single-tile forward throughput is achieved in FP32 on Tesla T4, compiling the student via TensorRT with Post-Training Quantization (INT8) targeting the NVIDIA Jetson Orin Nano (15\,W) or Xavier NX will enable direct deployment in vehicle-mounted smart camera enclosures with sub-5\,ms per-tile latency (yielding $>25$\,full scenes/sec).
 
 \subsection{4. Multi-Class Distress Taxonomy Extension}
 The current framework treats crack detection as binary instance segmentation. 
@@ -588,12 +594,12 @@ Evaluating the trained model on international road datasets across different con
 This report presented \textbf{CrackDistill}, a comprehensive framework transferring structural segmentation capability from \sam\ (224M parameters) into \yolo\ (2.84M parameters) for automated road crack inspection. 
 By resolving instance conversion with Connected Components Labeling, extracting pre-sigmoid boundary logits, replacing raw backbone MSE with PANet Neck CWD, diagnosing the zero-negative OOD crisis, reconstructing native mosaic composites, deploying a 2D Gaussian apodization TTA engine, and introducing Resolution-Preserving Mask-KL and Asymmetric Soft Tversky losses, the project achieved:
 \begin{itemize}[leftmargin=1.5em]
-  \item \textbf{0.5569 Mask mAP$_{50}$} in-domain segmentation peak (\texttt{04\_affinity});
+  \item \textbf{0.5485 Mask mAP$_{50}$} in-domain segmentation peak (\texttt{05\_multiscale});
   \item \textbf{0.1459 Mask mAP$_{50}$ / 0.1820 Box mAP$_{50}$} direct OOD detection SOTA (\texttt{07\_tversky});
   \item \textbf{0.7831 TTA Precision} all-time record (\texttt{07\_tversky});
   \item \textbf{0.7945 TTA Recall} all-time record (\texttt{06\_res\_preserving});
   \item \textbf{0.7542 Megapixel Tiled Dice} breakthrough (\texttt{03\_mosaic});
-  \item \textbf{107.8 FPS (9.27\,ms)} inference throughput on Tesla T4 edge hardware.
+  \item \textbf{107.8 FPS (9.27\,ms)} single-tile inference throughput on Tesla T4 (and 15.4\,scenes/s for full-scene $2000\times1500$ reconstruction).
 \end{itemize}
 These results confirm that foundation segmentation models can serve as highly effective structural teachers for edge-deployable inspection networks, bridging the gap between foundation model intelligence and real-time civil infrastructure maintenance.
 

@@ -72,21 +72,21 @@ To anchor all subsequent engineering moves, here is our locked empirical baselin
 │ Baseline (No KD, YOLOv11n-seg)        │     0.5400     │    0.5970     │      0.0848       │     0.0196     │   0.2414   │
 │ 01_seed42 (Uniform Mask-KL, τ=3.78)   │     0.5424     │    0.5976     │      0.0848       │     0.0196     │   0.2414   │
 │ 03_dilated (8px Context Band KL)      │     0.5387     │    0.5819     │      0.1007       │     0.0241     │   0.2612   │
-│ 04_affinity (Spatial Pixel Affinity)  │   0.5569 👑    │    0.5973     │      0.0831       │     0.0214     │   0.2594   │
-│ 05_multiscale (512x512 Logit Match)   │     0.5485     │   0.6001 👑   │      0.0872       │     0.0226     │   0.2625   │
+│ 04_affinity (Spatial Pixel Affinity)  │     0.5348     │    0.5831     │      0.0831       │     0.0214     │   0.2594   │
+│ 05_multiscale (512x512 Logit Match)   │   0.5485 👑    │   0.6001 👑   │      0.0872       │     0.0226     │   0.2625   │
 │ 06_layerkd (Neck CWD Layers 12,15,18) │     0.5422     │    0.5903     │      0.0944       │   0.0252 👑    │  0.2747 👑 │
 │ 09_focal (Focal Mask-KL, γ=2.0)       │     0.5413     │    0.5847     │      0.0931       │     0.0242     │   0.2671   │
 │ 09_combined (Affinity + Dilated)      │     0.5409     │    0.5881     │      0.0851       │     0.0200     │   0.2630   │
 │ 03_mosaic_native (Mosaic + SAM 2)     │     0.5440     │    0.5770     │    0.1409 🏆      │   0.0373 🏆    │   0.2515   │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-* Edge Deployment: 107.8 FPS (9.27 ms latency), 2.84M parameters, 6.2 MB checkpoint, 0 ms teacher overhead.
+* Edge Deployment: 107.8 FPS (9.27 ms) single-tile / 15.4 scenes/s (64.9 ms) full-scene 2000x1500 reconstruction on Tesla T4; 2.84M parameters, 6.2 MB checkpoint, 0 ms teacher overhead.
 ```
 
 ### Key Takeaways from the Current State:
 1. **The Mosaic Breakthrough (`03_mosaic_native`)** proved that the primary bottleneck was **spatial scale truncation**. Stitching wide composites and generating native-scale SAM 2 teacher logits unlocked a **+66.2% leap in OOD mAP50** and **doubled Box mAP50 (+106%)**.
-2. **The In-Domain Champion (`04_affinity`)** proved that 4-directional spatial affinity matching enforces topological connectivity on thin crack networks, achieving **`0.5569` mAP50**.
+2. **The In-Domain Champion (`05_multiscale`)** achieved peak in-domain segmentation (`0.5485` mAP50, `0.6001` Box mAP50), while **`04_affinity`** proved that 4-directional spatial affinity matching enforces topological connectivity on thin crack networks (`0.5348` mAP50).
 3. **The Localization Precision Champion (`06_layerkd`)** proved that Channel-Wise Distillation (CWD) across PANet Neck layers (12, 15, 18) forces the student's multi-scale receptive field to mimic SAM 2's spatial hierarchy, achieving the highest fine-grained localization (`0.0252` mAP50-95) and peak Tiled Dice (`0.2747`).
-4. **The Unsolved Gap**: Direct OOD mAP50 (`0.1409`) still lags In-Domain (`0.5569`). Analysis of error maps shows the primary culprit is **Precision Collapse**: false positive activations on uncracked asphalt texture due to zero negative training samples.
+4. **The Unsolved Gap**: Direct OOD mAP50 (`0.1409`) still lags In-Domain (`0.5485`). Analysis of error maps shows the primary culprit is **Precision Collapse**: false positive activations on uncracked asphalt texture due to zero negative training samples.
 
 ---
 

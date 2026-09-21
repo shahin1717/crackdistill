@@ -66,6 +66,8 @@ class KDYOLODataset(torch.utils.data.Dataset):
                                     "image_embed": torch.from_numpy(data["image_embed"]).float(),
                                     "feat1": torch.from_numpy(data["feat1"]).float()
                                 }
+                                if "feat0" in data:
+                                    sam_feat["feat0"] = torch.from_numpy(data["feat0"]).float()
                         except Exception:
                             pass
                 break
@@ -101,6 +103,10 @@ class KDSegmentationTrainer(SegmentationTrainer):
     def __init__(self, cfg=None, overrides=None, _callbacks=None, logits_dir=None, kd_cfg=None, **kwargs):
         import os
         from pathlib import Path
+        from ultralytics.cfg import DEFAULT_CFG
+
+        if cfg is None:
+            cfg = DEFAULT_CFG
 
         # Auto-convert master ConfigNode / master dict into Ultralytics cfg if master config passed directly
         if hasattr(cfg, "student") or (isinstance(cfg, dict) and "student" in cfg):
@@ -233,11 +239,11 @@ class KDSegmentationTrainer(SegmentationTrainer):
                 "task": "segment",
             }
 
-            # Scientific Fix (Bug #1): Enforce geometric alignment between student inputs and offline teacher logits.
+            # Scientific Fix (P0-3): Enforce identical augmentation policy across all experimental arms.
+            # To eliminate the augmentation confound, both baseline and KD runs must adhere to the same policy.
             # Spatial scrambling (mosaic, affine, flip) without matching teacher transforms corrupts supervision coordinates.
-            is_kd_on = (hasattr(kd_cfg, "enabled") and getattr(kd_cfg, "enabled")) or (isinstance(kd_cfg, dict) and kd_cfg.get("enabled", False))
             allow_spatial_aug = getattr(getattr(master_cfg, "train", None), "allow_spatial_aug", False)
-            if is_kd_on and not allow_spatial_aug:
+            if not allow_spatial_aug:
                 auto_overrides.update({
                     "mosaic": 0.0,
                     "close_mosaic": 0,
@@ -250,14 +256,14 @@ class KDSegmentationTrainer(SegmentationTrainer):
                     "flipud": 0.0,
                     "erasing": 0.0,
                 })
-                print(f"[KD] Geometric Alignment Enforced: Spatial augmentations (mosaic, affine, flip) disabled. Seed: {seed_val}")
+                print(f"[Augmentation Policy] Spatial augmentations (mosaic, affine, flip, erasing) disabled for controlled comparison (allow_spatial_aug=False). Seed: {seed_val}")
 
             if overrides and isinstance(overrides, dict):
                 auto_overrides.update(overrides)
 
             from ultralytics.cfg import get_cfg
             cfg = get_cfg(overrides=auto_overrides)
-            overrides = None
+            overrides = {}
 
         super().__init__(cfg=cfg, overrides=overrides, _callbacks=_callbacks, **kwargs)
 
@@ -285,8 +291,19 @@ class KDSegmentationTrainer(SegmentationTrainer):
 
         self.logits_dir  = Path(str(logits_dir))
         self.kd_cfg      = kd_cfg
-        
+
+        # Scientific Fix (P0-2): Strict baseline control arm gating.
+        # When distillation.enabled is False, cleanly bypass all teacher logit checking,
+        # projection layers, hooks, loss patching, and dataset wrapping.
+        is_kd_on = False
         if kd_cfg is not None:
+            if hasattr(kd_cfg, "enabled"):
+                is_kd_on = bool(getattr(kd_cfg, "enabled", False))
+            elif isinstance(kd_cfg, dict):
+                is_kd_on = bool(kd_cfg.get("enabled", False))
+        self.is_kd_on = is_kd_on
+        
+        if kd_cfg is not None and hasattr(kd_cfg, "temperature"):
             self.temperature = float(kd_cfg.temperature)
         else:
             self.temperature = 1.6502
@@ -295,10 +312,18 @@ class KDSegmentationTrainer(SegmentationTrainer):
         self._kd_logged  = False
         self._kd_consecutive_errors = 0
         self._kd_total_errors = 0
+        self._kd_total_batches = 0
+        self._dropped_instances_count = 0
+        self._total_instances_count = 0
         self._no_logits_warned = False
         self._sam_targets = {}   # image_stem → soft target tensor (M, 256, 256)
         self._sam_features = {}  # image_stem → dict of features
         self._hook_handles = []
+
+        if not self.is_kd_on:
+            self.proj_layers = torch.nn.ModuleDict()
+            print("[KD] Distillation DISABLED (`distillation.enabled=False`). Initialized Clean Baseline Control (native YOLOv11).")
+            return
 
         logit_files = list(self.logits_dir.glob("*.npy"))
         if len(logit_files) == 0:
@@ -350,8 +375,23 @@ class KDSegmentationTrainer(SegmentationTrainer):
                 f"Please ensure the teacher logits dataset is attached and linked properly to '{self.logits_dir}'."
             )
 
+    def get_instance_drop_stats(self):
+        """Return diagnostic statistics on dropped teacher instance masks."""
+        total = self._total_instances_count
+        dropped = self._dropped_instances_count
+        rate = (dropped / max(1, total)) if total > 0 else 0.0
+        return {
+            "total_instances": total,
+            "dropped_instances": dropped,
+            "drop_rate": rate,
+        }
+
     def setup_model(self):
         """Build model, set up projection layers and hooks, and call parent setup."""
+        if not self.is_kd_on:
+            print("[KD] Clean Baseline Control: Native YOLO setup (hooks, projection layers, and loss patch bypassed) ✓")
+            return super().setup_model()
+
         head_idx = 23
         is_freeze_head = hasattr(self.kd_cfg, "progressive") and self.kd_cfg.progressive.get("freeze_head", False)
 
@@ -442,7 +482,7 @@ class KDSegmentationTrainer(SegmentationTrainer):
         layer_target_map = {
             16: ("feat1", 64),
             19: ("image_embed", 256),
-            22: ("image_embed", 256),
+            22: ("image_embed_p5", 256),
         }
         proj_dict = nn.ModuleDict()
         for idx in layers_to_monitor:
@@ -451,11 +491,16 @@ class KDSegmentationTrainer(SegmentationTrainer):
                 feature_h = captured_shapes[idx][2]
                 if idx in layer_target_map:
                     target_key, out_channels = layer_target_map[idx]
-                    stride = 8 if out_channels == 64 else (16 if idx == 19 else 32)
+                    stride = 8 if target_key == "feat1" else (16 if target_key == "image_embed" else 32)
                 else:
                     img_sz = self.args.imgsz if isinstance(self.args.imgsz, int) else self.args.imgsz[0]
                     stride = img_sz // feature_h
-                    out_channels = 64 if stride <= 8 else 256
+                    if stride <= 4:
+                        out_channels = 32
+                    elif stride <= 8:
+                        out_channels = 64
+                    else:
+                        out_channels = 256
                 
                 # Cross-Architecture Projector (CAP): 2-stage conv with BatchNorm for CWD, or 1x1 for MSE
                 if feat_method == "cwd":
@@ -496,6 +541,9 @@ class KDSegmentationTrainer(SegmentationTrainer):
 
     def save_model(self):
         """Override save_model to temporarily detach hooks and restore original loss function on both model and EMA model."""
+        if not self.is_kd_on:
+            return super().save_model()
+
         try:
             from ultralytics.utils.torch_utils import unwrap_model
             model = unwrap_model(self.model)
@@ -545,12 +593,15 @@ class KDSegmentationTrainer(SegmentationTrainer):
     def build_dataset(self, img_path: str, mode: str = "train", batch: int | None = None):
         """Build custom KD dataset that wraps the default YOLO dataset."""
         base_dataset = super().build_dataset(img_path, mode, batch)
-        if mode != "train":
+        if mode != "train" or not self.is_kd_on:
             return base_dataset
         return KDYOLODataset(base_dataset, self.logits_dir, self.kd_cfg)
 
     def preprocess_batch(self, batch):
         """Preprocess batch and map preloaded SAM targets/features to GPU."""
+        if not self.is_kd_on:
+            return super().preprocess_batch(batch)
+
         # Ensure active hooks are registered on the active running model (handles DDP deepcopy recreation)
         if not hasattr(self, "_active_hooks_registered") or not self._active_hooks_registered:
             try:
@@ -583,6 +634,8 @@ class KDSegmentationTrainer(SegmentationTrainer):
         if isinstance(im_files, (str, Path)):
             im_files = [im_files]
         self._current_paths = list(im_files)
+        self._current_ratio_pad = batch.get("ratio_pad", None)
+        self._current_ori_shape = batch.get("ori_shape", None)
 
         # Retrieve the preloaded SAM targets and features from the batch dict
         sam_targets_list = batch.get("sam_target", [])
@@ -612,7 +665,12 @@ class KDSegmentationTrainer(SegmentationTrainer):
         return batch
 
     def _patch_model_loss(self):
-        """Patch model.loss() to add KD loss using student predictions."""
+        """
+        Dynamically patch Ultralytics Segment model loss function with multi-component KD losses.
+        """
+        if not self.is_kd_on:
+            return
+
         trainer_ref = self
 
         try:
@@ -656,10 +714,11 @@ class KDSegmentationTrainer(SegmentationTrainer):
         Compute KL divergence, boundary, and feature alignment losses.
         """
         kd_losses = {}
-        if not self._sam_targets:
+        if not self.is_kd_on or not self._sam_targets:
             return kd_losses
 
         try:
+            self._kd_total_batches += 1
             criterion = model.criterion
             preds_parsed = criterion.parse_output(preds)
             
@@ -668,6 +727,9 @@ class KDSegmentationTrainer(SegmentationTrainer):
             
             pred_masks = preds_parsed["mask_coefficient"].permute(0, 2, 1).contiguous()
             proto = preds_parsed["proto"]
+            imgsz = batch["img"].shape[-2:] if "img" in batch else (512, 512)
+            ratio_pad_list = batch.get("ratio_pad", getattr(self, "_current_ratio_pad", None))
+            ori_shape_list = batch.get("ori_shape", getattr(self, "_current_ori_shape", None))
             
             loss_mask_kd = torch.tensor(0.0, device=self.device)
             loss_mask_kd_count = 0
@@ -693,8 +755,21 @@ class KDSegmentationTrainer(SegmentationTrainer):
                 if fg_mask_i.any() and sam_logits.shape[0] > 0:
                     raw_mask_idx = target_gt_idx[i][fg_mask_i]
 
-                    # Scientific Fix (Bug #2): Strict instance index validation — eliminate silent clamping
+                    # Scientific Fix (Bug #2 & P1-1): Strict instance index validation with diagnostic tracking
+                    n_inst = raw_mask_idx.numel()
                     valid_idx_mask = (raw_mask_idx >= 0) & (raw_mask_idx < sam_logits.shape[0])
+                    n_valid = int(valid_idx_mask.sum().item())
+                    n_dropped = n_inst - n_valid
+                    self._total_instances_count += n_inst
+                    self._dropped_instances_count += n_dropped
+
+                    if n_dropped > 0:
+                        print(
+                            f"[KD Warning] Dropped {n_dropped}/{n_inst} teacher instances for '{stem}' "
+                            f"(indices out of bounds [0, {sam_logits.shape[0] - 1}]). "
+                            f"Cumulative dropped instances: {self._dropped_instances_count}/{self._total_instances_count}"
+                        )
+
                     if not valid_idx_mask.any():
                         continue
 
@@ -711,27 +786,97 @@ class KDSegmentationTrainer(SegmentationTrainer):
                     else:
                         target_h, target_w = 256, 256
                     
-                    # Resize both to target resolution
+                    # Resize student mask logits to target resolution
                     student_mask_logits_resized = F.interpolate(
                         pred_mask_logits.unsqueeze(1),
                         size=(target_h, target_w),
                         mode="bilinear",
                         align_corners=False
                     ).squeeze(1)
+
+                    # Extract letterbox parameters for image i
+                    orig_h, orig_w = None, None
+                    if ori_shape_list is not None and i < len(ori_shape_list):
+                        orig_h, orig_w = ori_shape_list[i]
                     
-                    sam_logits_matched_resized = F.interpolate(
-                        sam_logits_matched.unsqueeze(1),
-                        size=(target_h, target_w),
-                        mode="bilinear",
-                        align_corners=False
-                    ).squeeze(1)
-                    
+                    pad_w, pad_h, r_w, r_h = 0.0, 0.0, 1.0, 1.0
+                    if ratio_pad_list is not None and i < len(ratio_pad_list):
+                        r_info, pad_info = ratio_pad_list[i]
+                        if isinstance(r_info, (tuple, list)):
+                            r_w, r_h = float(r_info[0]), float(r_info[1])
+                        else:
+                            r_w, r_h = float(r_info), float(r_info)
+                        if isinstance(pad_info, (tuple, list)):
+                            pad_w, pad_h = float(pad_info[0]), float(pad_info[1])
+                        else:
+                            pad_w, pad_h = float(pad_info), float(pad_info)
+                    elif orig_h is not None and orig_w is not None:
+                        r = min(float(imgsz[0]) / float(orig_h), float(imgsz[1]) / float(orig_w))
+                        r_w, r_h = r, r
+                        pad_w = (float(imgsz[1]) - round(float(orig_w) * r)) / 2.0
+                        pad_h = (float(imgsz[0]) - round(float(orig_h) * r)) / 2.0
+
+                    # Scientific Fix (P0-1): Exact Letterbox Coordinate Warping
+                    # SAM teacher logits span [0, orig_h] x [0, orig_w].
+                    # Student proto spans letterboxed imgsz canvas with padding.
+                    # Project teacher logits into student canvas with exact padding alignment.
+                    if orig_h is not None and orig_w is not None:
+                        scale_y = target_h / float(imgsz[0])
+                        scale_x = target_w / float(imgsz[1])
+                        t_top = int(round(pad_h * scale_y))
+                        t_left = int(round(pad_w * scale_x))
+                        t_unpad_h = int(round(float(orig_h) * r_h * scale_y))
+                        t_unpad_w = int(round(float(orig_w) * r_w * scale_x))
+                        
+                        t_top = max(0, min(t_top, target_h - 1))
+                        t_left = max(0, min(t_left, target_w - 1))
+                        t_unpad_h = max(1, min(t_unpad_h, target_h - t_top))
+                        t_unpad_w = max(1, min(t_unpad_w, target_w - t_left))
+                        t_bottom = max(0, target_h - t_top - t_unpad_h)
+                        t_right = max(0, target_w - t_left - t_unpad_w)
+
+                        sam_unpad = F.interpolate(
+                            sam_logits_matched.unsqueeze(1),
+                            size=(t_unpad_h, t_unpad_w),
+                            mode="bilinear",
+                            align_corners=False
+                        )
+                        # Pad canvas with -20.0 (background logit, sigmoid(-20/T) ~ 0)
+                        sam_logits_matched_resized = F.pad(
+                            sam_unpad,
+                            (t_left, t_right, t_top, t_bottom),
+                            mode="constant",
+                            value=-20.0
+                        ).squeeze(1)
+
+                        valid_content_mask = torch.zeros(
+                            (target_h, target_w),
+                            dtype=torch.bool,
+                            device=student_mask_logits_resized.device
+                        )
+                        valid_content_mask[t_top : t_top + t_unpad_h, t_left : t_left + t_unpad_w] = True
+                    else:
+                        sam_logits_matched_resized = F.interpolate(
+                            sam_logits_matched.unsqueeze(1),
+                            size=(target_h, target_w),
+                            mode="bilinear",
+                            align_corners=False
+                        ).squeeze(1)
+                        valid_content_mask = torch.ones(
+                            (target_h, target_w),
+                            dtype=torch.bool,
+                            device=student_mask_logits_resized.device
+                        )
+                        t_top, t_left = 0, 0
+                        t_unpad_h, t_unpad_w = target_h, target_w
+
                     # Align dtypes to prevent precision/autocast mismatches
                     sam_logits_matched_resized = sam_logits_matched_resized.to(dtype=student_mask_logits_resized.dtype)
                     
                     # L_mask (KL Divergence on Bernoulli soft probabilities)
                     # FIX: clamp logits before sigmoid to prevent log(0) -> NaN
-                    if self.kd_cfg.losses.mask_kd.enabled:
+                    mask_kd_cfg = getattr(getattr(self.kd_cfg, "losses", None), "mask_kd", None)
+                    if mask_kd_cfg and getattr(mask_kd_cfg, "enabled", False):
                         sam_clamped = torch.clamp(sam_logits_matched_resized / self.temperature, -15.0, 15.0)
                         stu_clamped = torch.clamp(student_mask_logits_resized / self.temperature, -15.0, 15.0)
                         q = torch.sigmoid(sam_clamped)
@@ -742,71 +887,82 @@ class KDSegmentationTrainer(SegmentationTrainer):
                         kl = q * (torch.log(q + 1e-8) - p_log) + inv_q * (torch.log(inv_q + 1e-8) - inv_p_log)
                         
                         # Foreground-Dilated / Region-Focused Mask-KL (if enabled)
-                        use_focused = getattr(self.kd_cfg.losses.mask_kd, "focused", False) or getattr(self.kd_cfg.losses.mask_kd, "foreground_dilated", False)
+                        use_focused = getattr(mask_kd_cfg, "focused", False) or getattr(mask_kd_cfg, "foreground_dilated", False)
                         if use_focused:
                             fg_core = (q > 0.35).float().unsqueeze(1)
                             fg_dilated = F.max_pool2d(fg_core, kernel_size=9, stride=1, padding=4).squeeze(1)
                             fg_core = fg_core.squeeze(1)
                             weight_map = torch.where(fg_core > 0, 1.0, torch.where(fg_dilated > 0, 0.5, 0.05))
+                            weight_map = weight_map * valid_content_mask.unsqueeze(0).float()
                             kl_weighted = (kl * weight_map).sum(dim=(-1, -2)) / (weight_map.sum(dim=(-1, -2)) + 1e-6)
                             loss_mask_kd = loss_mask_kd + kl_weighted.mean() * (self.temperature ** 2)
                         else:
-                            loss_mask_kd = loss_mask_kd + kl.mean() * (self.temperature ** 2)
+                            val_mask_f = valid_content_mask.unsqueeze(0).float()
+                            kl_valid = (kl * val_mask_f).sum(dim=(-1, -2)) / (val_mask_f.sum(dim=(-1, -2)) + 1e-6)
+                            loss_mask_kd = loss_mask_kd + kl_valid.mean() * (self.temperature ** 2)
                         loss_mask_kd_count += 1
 
                     # L_affinity (Spatial Pixel Affinity / Directional Gradient KD)
-                    affinity_cfg = getattr(self.kd_cfg.losses, "affinity", None)
+                    affinity_cfg = getattr(getattr(self.kd_cfg, "losses", None), "affinity", None)
                     if affinity_cfg and getattr(affinity_cfg, "enabled", False):
                         p_stu = torch.sigmoid(stu_clamped)
-                        d_stu_x = p_stu[:, :, 1:] - p_stu[:, :, :-1]
-                        d_stu_y = p_stu[:, 1:, :] - p_stu[:, :-1, :]
-                        d_tea_x = q[:, :, 1:] - q[:, :, :-1]
-                        d_tea_y = q[:, 1:, :] - q[:, :-1, :]
-                        loss_aff = F.mse_loss(d_stu_x, d_tea_x.detach()) + F.mse_loss(d_stu_y, d_tea_y.detach())
-                        loss_affinity = loss_affinity + loss_aff
-                        loss_affinity_count += 1
+                        p_stu_crop = p_stu[:, t_top : t_top + t_unpad_h, t_left : t_left + t_unpad_w]
+                        q_crop = q[:, t_top : t_top + t_unpad_h, t_left : t_left + t_unpad_w]
+                        if p_stu_crop.shape[-2] > 1 and p_stu_crop.shape[-1] > 1:
+                            d_stu_x = p_stu_crop[:, :, 1:] - p_stu_crop[:, :, :-1]
+                            d_stu_y = p_stu_crop[:, 1:, :] - p_stu_crop[:, :-1, :]
+                            d_tea_x = q_crop[:, :, 1:] - q_crop[:, :, :-1]
+                            d_tea_y = q_crop[:, 1:, :] - q_crop[:, :-1, :]
+                            loss_aff = F.mse_loss(d_stu_x, d_tea_x.detach()) + F.mse_loss(d_stu_y, d_tea_y.detach())
+                            loss_affinity = loss_affinity + loss_aff
+                            loss_affinity_count += 1
 
                     # L_boundary (Per-instance matched boundary weighted loss)
-                    if self.kd_cfg.losses.boundary.enabled:
+                    boundary_cfg = getattr(getattr(self.kd_cfg, "losses", None), "boundary", None)
+                    if boundary_cfg and getattr(boundary_cfg, "enabled", False):
                         sam_soft = torch.sigmoid(sam_logits_matched_resized / self.temperature)
                         bw = (1.0 - torch.abs(sam_soft - 0.5) * 2).detach()
                         stu_clamped_raw = torch.clamp(student_mask_logits_resized, -30.0, 30.0)
                         bce = F.binary_cross_entropy_with_logits(
                             stu_clamped_raw, sam_soft.detach(), reduction="none"
                         )
-                        loss_boundary = loss_boundary + (bce * bw).mean()
+                        bw_valid = bw * valid_content_mask.unsqueeze(0).float()
+                        denom = bw_valid.sum(dim=(-1, -2)).clamp(min=1e-6)
+                        loss_boundary = loss_boundary + ((bce * bw_valid).sum(dim=(-1, -2)) / denom).mean()
                         loss_boundary_count += 1
 
                     # L_tversky (Asymmetric Tversky loss targeting thin-crack continuity)
-                    tversky_cfg = getattr(self.kd_cfg.losses, "tversky", None)
+                    tversky_cfg = getattr(getattr(self.kd_cfg, "losses", None), "tversky", None)
                     if tversky_cfg and getattr(tversky_cfg, "enabled", False):
                         p_stu = torch.sigmoid(stu_clamped)
                         alpha = float(getattr(tversky_cfg, "alpha", 0.30))
                         beta = float(getattr(tversky_cfg, "beta", 0.70))
                         eps = 1.0
-                        tp = (p_stu * q).sum(dim=(-1, -2))
-                        fp = (p_stu * (1.0 - q)).sum(dim=(-1, -2))
-                        fn = ((1.0 - p_stu) * q).sum(dim=(-1, -2))
+                        val_mask_f = valid_content_mask.unsqueeze(0).float()
+                        p_stu_val = p_stu * val_mask_f
+                        q_val = q * val_mask_f
+                        tp = (p_stu_val * q_val).sum(dim=(-1, -2))
+                        fp = (p_stu_val * (1.0 - q_val)).sum(dim=(-1, -2))
+                        fn = ((1.0 - p_stu_val) * q_val).sum(dim=(-1, -2))
                         tversky_idx = (tp + eps) / (tp + alpha * fp + beta * fn + eps)
                         loss_tversky = loss_tversky + (1.0 - tversky_idx).mean()
                         loss_tversky_count += 1
 
-            if self.kd_cfg.losses.mask_kd.enabled and loss_mask_kd_count > 0:
-                kd_losses["mask_kd"] = (loss_mask_kd / loss_mask_kd_count) * self.kd_cfg.losses.mask_kd.weight
+            if mask_kd_cfg and getattr(mask_kd_cfg, "enabled", False) and loss_mask_kd_count > 0:
+                kd_losses["mask_kd"] = (loss_mask_kd / loss_mask_kd_count) * float(getattr(mask_kd_cfg, "weight", 1.0))
 
-            affinity_cfg = getattr(self.kd_cfg.losses, "affinity", None)
             if affinity_cfg and getattr(affinity_cfg, "enabled", False) and loss_affinity_count > 0:
                 kd_losses["affinity"] = (loss_affinity / loss_affinity_count) * float(getattr(affinity_cfg, "weight", 1.0))
                 
-            if self.kd_cfg.losses.boundary.enabled and loss_boundary_count > 0:
-                kd_losses["boundary"] = (loss_boundary / loss_boundary_count) * self.kd_cfg.losses.boundary.weight
+            if boundary_cfg and getattr(boundary_cfg, "enabled", False) and loss_boundary_count > 0:
+                kd_losses["boundary"] = (loss_boundary / loss_boundary_count) * float(getattr(boundary_cfg, "weight", 1.0))
 
-            tversky_cfg = getattr(self.kd_cfg.losses, "tversky", None)
             if tversky_cfg and getattr(tversky_cfg, "enabled", False) and loss_tversky_count > 0:
                 kd_losses["tversky"] = (loss_tversky / loss_tversky_count) * float(getattr(tversky_cfg, "weight", 1.0))
 
             # 2. Compute L_feature (Scale-matched alignment or CWD)
-            if self.kd_cfg.losses.feature.enabled:
+            feat_cfg = getattr(getattr(self.kd_cfg, "losses", None), "feature", None)
+            if feat_cfg and getattr(feat_cfg, "enabled", False):
                 loss_feat = torch.tensor(0.0, device=self.device)
                 feat_method = getattr(self.kd_cfg.losses.feature, "method", "mse")
                 default_layers = [16, 19, 22]
@@ -829,28 +985,68 @@ class KDSegmentationTrainer(SegmentationTrainer):
                         layer_target_map = {
                             16: ("feat1", 64),
                             19: ("image_embed", 256),
-                            22: ("image_embed", 256),
+                            22: ("image_embed_p5", 256),
                         }
                         if idx in layer_target_map:
                             target_key, out_channels = layer_target_map[idx]
                         else:
                             img_sz = self.args.imgsz if isinstance(self.args.imgsz, int) else self.args.imgsz[0]
                             stride = img_sz // feature_h
-                            target_key = "feat1" if stride <= 8 else "image_embed"
-                            out_channels = 64 if stride <= 8 else 256
-                        
+                            if stride <= 4:
+                                target_key = "feat0"
+                            elif stride <= 8:
+                                target_key = "feat1"
+                            elif stride <= 16:
+                                target_key = "image_embed"
+                            else:
+                                target_key = "image_embed_p5"
                         # Stack SAM features for the batch (per-item spatial alignment before concat)
                         tf_list = []
                         valid_item_indices = []
                         target_h, target_w = sf_proj.shape[2], sf_proj.shape[3]
                         for b_idx, img_path in enumerate(self._current_paths):
                             stem = Path(img_path).stem
-                            if stem in self._sam_features and target_key in self._sam_features[stem]:
-                                tf_item = self._sam_features[stem][target_key]
+                            has_target = stem in self._sam_features and (
+                                target_key in self._sam_features[stem] or
+                                (target_key == "image_embed_p5" and "image_embed" in self._sam_features[stem])
+                            )
+                            if has_target:
+                                if target_key in self._sam_features[stem]:
+                                    tf_item = self._sam_features[stem][target_key]
+                                else:
+                                    # Dynamically pool image_embed (stride 16 -> stride 32)
+                                    raw_emb = self._sam_features[stem]["image_embed"]
+                                    if raw_emb.ndim == 3:
+                                        tf_item = F.avg_pool2d(raw_emb.unsqueeze(0), kernel_size=2, stride=2).squeeze(0)
+                                    else:
+                                        tf_item = F.avg_pool2d(raw_emb, kernel_size=2, stride=2)
+
                                 if tf_item.ndim == 3:
                                     tf_item = tf_item.unsqueeze(0)
-                                if tf_item.shape[2:] != (target_h, target_w):
+                                
+                                # Letterbox warping for teacher features if padding is present
+                                if ori_shape_list is not None and b_idx < len(ori_shape_list) and ratio_pad_list is not None and b_idx < len(ratio_pad_list):
+                                    f_orig_h, f_orig_w = ori_shape_list[b_idx]
+                                    f_r_info, f_pad_info = ratio_pad_list[b_idx]
+                                    f_rw = float(f_r_info[0]) if isinstance(f_r_info, (tuple, list)) else float(f_r_info)
+                                    f_rh = float(f_r_info[1]) if isinstance(f_r_info, (tuple, list)) else float(f_r_info)
+                                    f_pw = float(f_pad_info[0]) if isinstance(f_pad_info, (tuple, list)) else float(f_pad_info)
+                                    f_ph = float(f_pad_info[1]) if isinstance(f_pad_info, (tuple, list)) else float(f_pad_info)
+                                    
+                                    f_sc_y = target_h / float(imgsz[0])
+                                    f_sc_x = target_w / float(imgsz[1])
+                                    f_top = max(0, min(int(round(f_ph * f_sc_y)), target_h - 1))
+                                    f_left = max(0, min(int(round(f_pw * f_sc_x)), target_w - 1))
+                                    f_unpad_h = max(1, min(int(round(float(f_orig_h) * f_rh * f_sc_y)), target_h - f_top))
+                                    f_unpad_w = max(1, min(int(round(float(f_orig_w) * f_rw * f_sc_x)), target_w - f_left))
+                                    f_bottom = max(0, target_h - f_top - f_unpad_h)
+                                    f_right = max(0, target_w - f_left - f_unpad_w)
+                                    
+                                    tf_unpad = F.interpolate(tf_item, size=(f_unpad_h, f_unpad_w), mode="bilinear", align_corners=False)
+                                    tf_item = F.pad(tf_unpad, (f_left, f_right, f_top, f_bottom), mode="constant", value=0.0)
+                                elif tf_item.shape[2:] != (target_h, target_w):
                                     tf_item = F.interpolate(tf_item, size=(target_h, target_w), mode="bilinear", align_corners=False)
+                                
                                 tf_list.append(tf_item)
                                 valid_item_indices.append(b_idx)
                         
@@ -907,19 +1103,29 @@ class KDSegmentationTrainer(SegmentationTrainer):
         except Exception as e:
             self._kd_consecutive_errors += 1
             self._kd_total_errors += 1
-            strict_kd = getattr(self.kd_cfg, "strict", True)
+            strict_kd = getattr(self.kd_cfg, "strict", True) if self.kd_cfg is not None else True
             
-            # Fail fast if consecutive KD failures occur, preventing silent training corruption
-            if strict_kd and self._kd_consecutive_errors > 5:
+            # Fail fast if strict mode is enabled, preventing silent training corruption
+            if strict_kd:
+                import traceback
+                tb = traceback.format_exc()
                 raise RuntimeError(
-                    f"[KD Critical Error] KD loss computation failed for {self._kd_consecutive_errors} consecutive batches. "
-                    f"Last error ({type(e).__name__}): {e}. Halting training to prevent silent degeneration."
+                    f"[KD Critical Error] KD loss computation failed in strict mode (batch failure #{self._kd_total_errors}):\n"
+                    f"{type(e).__name__}: {e}\n"
+                    f"Traceback:\n{tb}\n"
+                    f"Halting training immediately (strict=True) to prevent silent distillation corruption."
                 ) from e
-            elif self._kd_consecutive_errors <= 3 or self._kd_total_errors % 50 == 0:
-                print(f"[KD Warning] Batch KD loss error (consecutive={self._kd_consecutive_errors}, total={self._kd_total_errors}): "
-                      f"{type(e).__name__}: {e}")
-                if self._kd_consecutive_errors <= 2:
-                    import traceback
-                    traceback.print_exc()
+            else:
+                if self._kd_consecutive_errors > 5:
+                    raise RuntimeError(
+                        f"[KD Critical Error] KD loss computation failed for {self._kd_consecutive_errors} consecutive batches. "
+                        f"Last error ({type(e).__name__}): {e}. Halting training to prevent silent degeneration."
+                    ) from e
+                elif self._kd_consecutive_errors <= 3 or self._kd_total_errors % 50 == 0:
+                    print(f"[KD Warning] Batch KD loss error (consecutive={self._kd_consecutive_errors}, total={self._kd_total_errors}): "
+                          f"{type(e).__name__}: {e}")
+                    if self._kd_consecutive_errors <= 2:
+                        import traceback
+                        traceback.print_exc()
 
         return kd_losses

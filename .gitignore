@@ -30,7 +30,7 @@ models/
 
 # Dataset & Data Files
 data/datasets/
-data/teacher_logits/
+data/teacher_logits*
 data/*.zip
 data/*.tar
 data/*.tar.gz

@@ -343,6 +343,7 @@ def main():
                     np.savez_compressed(
                         str(feat_file),
                         image_embed=image_embed,
+                        feat0=feat0,
                         feat1=feat1
                     )
                 generated += 1

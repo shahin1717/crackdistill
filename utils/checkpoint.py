@@ -10,7 +10,7 @@ import json
 import os
 import time
 from pathlib import Path
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 
 def compute_file_sha256(file_path: Union[str, Path], chunk_size: int = 1024 * 1024) -> str:
@@ -136,3 +136,71 @@ def save_checkpoint_manifest(manifest: Dict[str, Any], output_path: Optional[Uni
         json.dump(manifest, f, indent=2)
 
     return out_p
+
+
+def discover_and_deduplicate_checkpoints(
+    search_roots: Optional[List[Union[str, Path]]] = None,
+    patterns: tuple = ("**/best.pt",),
+) -> List[Dict[str, Any]]:
+    """
+    Search directory trees for checkpoints, resolving paths and deduplicating
+    by SHA256 file digest to prevent duplicate evaluations or collision.
+
+    Returns a list of dicts:
+        [{
+            "name": str,       # Disambiguated experiment name
+            "path": Path,      # Resolved checkpoint file path
+            "sha256": str,     # Full SHA256 digest
+            "short_sha": str,  # First 8 characters of SHA256
+            "size_bytes": int, # Size in bytes
+        }, ...]
+    """
+    if search_roots is None:
+        search_roots = [Path("/kaggle/input"), Path("runs")]
+
+    raw_paths: List[Path] = []
+    for root in search_roots:
+        root_p = Path(root)
+        if root_p.exists():
+            for pat in patterns:
+                raw_paths.extend(root_p.glob(pat))
+
+    seen_hashes: Dict[str, Path] = {}
+    discovered: List[Dict[str, Any]] = []
+
+    for p in sorted(raw_paths):
+        try:
+            resolved = resolve_checkpoint(p)
+        except Exception:
+            continue
+
+        sha = compute_file_sha256(resolved)
+        if sha in seen_hashes:
+            continue
+
+        seen_hashes[sha] = resolved
+        parts = resolved.parts
+        if len(parts) >= 3 and parts[-2] == "weights":
+            exp_name = parts[-3]
+        elif len(parts) >= 2:
+            exp_name = parts[-2]
+        else:
+            exp_name = resolved.stem
+
+        # Disambiguate name if already present
+        base_name = exp_name
+        counter = 1
+        existing_names = [d["name"] for d in discovered]
+        while exp_name in existing_names:
+            exp_name = f"{base_name}_{counter}"
+            counter += 1
+
+        discovered.append({
+            "name": exp_name,
+            "path": resolved,
+            "sha256": sha,
+            "short_sha": sha[:8],
+            "size_bytes": resolved.stat().st_size,
+        })
+
+    return discovered

@@ -14,7 +14,7 @@ def main():
         "# 🚀 Crack-Distill: Combined Spatial Affinity + Foreground-Dilated KD (Seed 42)\n",
         "Fuses the two empirical winners from production runs:\n",
         "1. **Foreground-Dilated Mask-KL** (from `03_dilated`, best OOD +18.7%)\n",
-        "2. **4-Directional Spatial Pixel Affinity** (from `04_affinity`, best in-domain 0.5569 Mask mAP50)\n",
+        "2. **4-Directional Spatial Pixel Affinity** (from `04_affinity`, in-domain 0.5348 Mask mAP50)\n",
         "\n",
         "### Recipe Specifications:\n",
         "* **Student Model**: YOLOv11n-seg (2.84M parameters, 10.2 GFLOPs)\n",

@@ -84,8 +84,8 @@ Our comprehensive ablation covers six loss configurations, two datasets
 (Crack500, DeepCrack), three distillation regimes (output-only, intermediate
 neck, combined), native-scale mosaic augmentation, and a tiled sliding-window
 evaluation engine.
-The best in-domain variant (\texttt{04\_affinity}) achieves
-\textbf{Mask mAP$_{50}$\,=\,0.5569} ($+3.1\%$ over baseline), while the best OOD
+The best in-domain variant (\texttt{05\_multiscale}) achieves
+\textbf{Mask mAP$_{50}$\,=\,0.5485} (and \textbf{Box mAP$_{50}$\,=\,0.6001}), while the best OOD
 variant (\texttt{03\_dilated}) achieves \textbf{OOD Mask mAP$_{50}$\,=\,0.1007}
 ($+18.7\%$) on uncropped $2000\times1500$ road photos.
 Tiled sliding-window inference with 2D Gaussian apodization recovers
@@ -509,11 +509,11 @@ connectivity:
   \mathrm{MSE}(\nabla_y\sigma(z_s),\nabla_y\sigma(z_t))
 \]
 Teaches the student the \emph{topology} of crack boundaries.
-\textbf{Best in-domain Mask mAP$_{50}$ = 0.5569 (+3.1\%).}
+\textbf{In-domain Mask mAP$_{50}$ = 0.5348.}
 
 \subsubsection{\texttt{05\_multiscale} --- Multi-Scale 512 Logit Matching}
 Upsamples SAM~2 logits from $256\times256$ to $512\times512$ (bicubic).
-\textbf{Best Box mAP$_{50}$ = 0.6001.}
+\textbf{Best in-domain Mask mAP$_{50}$ = 0.5485, Box mAP$_{50}$ = 0.6001.}
 
 \subsubsection{\texttt{06\_layerkd} --- Neck Channel-Wise Distillation}
 \label{sec:layerkd_variant}
@@ -540,8 +540,8 @@ Variant &
 No-KD Baseline & 0.5400 & 0.5970 & 0.0848 & 0.0196 & 0.2414 & Reference \\
 \texttt{01\_seed42} & 0.5424 & 0.5976 & 0.0848 & 0.0196 & 0.2414 & Stable prod.\ baseline \\
 \texttt{03\_dilated} & 0.5387 & 0.5819 & \textbf{0.1007}$^\star$ & 0.0241 & 0.2612 & \#1 OOD (+18.7\%) \\
-\texttt{04\_affinity} & \textbf{0.5569}$^\star$ & 0.5973 & 0.0831 & 0.0214 & 0.2594 & \#1 In-Domain (+3.1\%) \\
-\texttt{05\_multiscale} & 0.5485 & \textbf{0.6001}$^\star$ & 0.0872 & 0.0226 & 0.2625 & \#1 Box Accuracy \\
+\texttt{04\_affinity} & 0.5348 & 0.5831 & 0.0831 & 0.0214 & 0.2594 & Relational Affinity \\
+\texttt{05\_multiscale} & \textbf{0.5485}$^\star$ & \textbf{0.6001}$^\star$ & 0.0872 & 0.0226 & 0.2625 & \#1 In-Domain \& Box \\
 \texttt{06\_layerkd} & 0.5422 & 0.5903 & 0.0944 & \textbf{0.0252}$^\star$ & \textbf{0.2747}$^\star$ & \#1 Fine-Grained+Tiled \\
 \texttt{09\_focal} & 0.5413 & 0.5847 & 0.0931 & 0.0242 & 0.2671 & Boundary regularisation \\
 \texttt{09\_combined} & 0.5409 & 0.5881 & 0.0851 & 0.0200 & 0.2630 & Dual mask (no synergy) \\
@@ -786,9 +786,9 @@ Dual output losses &
 \toprule
 Goal & Recommended Variant & Key Metric \\
 \midrule
-Best in-domain segmentation & \texttt{04\_affinity} & Mask mAP$_{50}$ = 0.5569 \\
+Best in-domain segmentation & \texttt{05\_multiscale} & Mask mAP$_{50}$ = 0.5485 \\
 Best OOD generalisation & \texttt{03\_dilated} & OOD Mask mAP$_{50}$ = 0.1007 \\
-Best full-res deployment (Dice) & \texttt{04\_affinity} & Tiled Dice = 0.2683 \\
+Best full-res deployment (Dice) & \texttt{06\_layerkd} & Tiled Dice = 0.2747 \\
 Best fine-grained localisation & \texttt{06\_layerkd} & OOD Mask mAP$_{50\text{-}95}$ = 0.0252 \\
 Best bounding-box accuracy & \texttt{05\_multiscale} & Box mAP$_{50}$ = 0.6001 \\
 Edge speed & All variants & 107.8 FPS / 9.27 ms \\
@@ -798,7 +798,8 @@ Edge speed & All variants & 107.8 FPS / 9.27 ms \\
 
 \subsection{Primary Paper Narrative}
 
-\texttt{04\_affinity}: Mask mAP$_{50}$ = 0.5569 ($+3.1\%$).
+\texttt{05\_multiscale}: Mask mAP$_{50}$ = 0.5485, Box mAP$_{50}$ = 0.6001.
+\texttt{04\_affinity}: Mask mAP$_{50}$ = 0.5348, Box mAP$_{50}$ = 0.5831.
 Tiled inference at $512\times512$, 20\% overlap: Dice = 0.2683,
 a \textbf{+67.8\%} improvement over direct downsampling (0.1599) with no
 retraining.

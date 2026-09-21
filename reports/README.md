@@ -9,7 +9,7 @@ This directory is the central repository for all academic reports, LaTeX papers,
 ### 1. 📜 LaTeX Master Paper & Publication Drafts
 * **[crackdistill_master_report.tex](file:///home/shahin/distill/reports/crackdistill_master_report.tex)** (also mirrored as **[crackdistill_paper.tex](file:///home/shahin/distill/reports/crackdistill_paper.tex)**):
   * **The definitive master LaTeX report** detailing the full project arc from Day 0 through the final verified breakthroughs.
-  * *Covers:* Mathematical loss formulations (Bernoulli KL, CWD, Asymmetric Tversky, Prototype Upsampling), Connected Components conversion, Optuna search ($\tau=3.7769, W=0.9612$), PANet Neck CWD, 250-mosaic native teacher extraction, 2D Gaussian apodization TTA engine, all-time record leaderboards, Tesla T4 edge deployment (107.8 FPS), and future research roadmap.
+  * *Covers:* Mathematical loss formulations (Bernoulli KL, CWD, Asymmetric Tversky, Prototype Upsampling), Connected Components conversion, Optuna search ($\tau=3.7769, W=0.9612$), PANet Neck CWD, 250-mosaic native teacher extraction, 2D Gaussian apodization TTA engine, all-time record leaderboards, Tesla T4 edge deployment (107.8 FPS single-tile / 15.4 FPS full-scene), and future research roadmap.
 * **[crackdistill_paper_v1.tex](file:///home/shahin/distill/reports/crackdistill_paper_v1.tex)**: Initial LaTeX paper draft from August 2026.
 * **[crackdistill_paper_v1.pdf](file:///home/shahin/distill/reports/crackdistill_paper_v1.pdf)** (and **[crackdistill_paper.pdf](file:///home/shahin/distill/reports/crackdistill_paper.pdf)**): Compiled PDF of the paper draft.
 
@@ -45,7 +45,8 @@ This directory is the central repository for all academic reports, LaTeX papers,
 | Recipe / Benchmark Variant | In-Domain Mask mAP50 | Direct OOD Mask mAP50 | Full-Res Tiled Dice | Multi-Scale TTA Precision | Multi-Scale TTA Recall | Distinct Architectural Role |
 | :--- | :---: | :---: | :---: | :---: | :---: | :--- |
 | **Baseline YOLOv11 (No KD)** | 0.5400 | 0.0848 | 0.2414 | 0.2840 | 0.2104 | Standard YOLO reference |
-| **`04_affinity` (Spatial Relational KD)** | **0.5569** 👑 | 0.0831 | 0.2594 | 0.3080 | 0.2240 | **In-Domain Segmentation Champion** |
+| **`05_multiscale` (512x512 Logit KD)** | **0.5485** 👑 | 0.0872 | 0.2625 | 0.7580 | 0.5080 | **In-Domain Segmentation Champion** |
+| **`04_affinity` (Spatial Relational KD)** | 0.5348 | 0.0831 | 0.2594 | 0.3080 | 0.2240 | Relational Topological Constraints |
 | **`03_mosaic_native` (Wide Composites)** | 0.5440 | 0.1409 | **0.7542** 👑 | 0.7709 | 0.7848 | **Overall Megapixel Dice Champion** |
 | **`06_res_preserving` (Upsampled Proto)** | 0.5340 | 0.1130 | 0.7446 | 0.7541 | **0.7945** 👑 | **All-Time Hairline Crack Recall Champion** |
 | **`07_asymmetric_tversky` (Soft Tversky $\beta=0.7$)** | 0.5390 | **0.1459** 👑 | 0.7402 | **0.7831** 👑 | 0.7546 | **All-Time Direct OOD & Precision Champion** |

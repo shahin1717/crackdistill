@@ -32,6 +32,11 @@ EXPERIMENTS = {
         "description": "Lower bound — YOLO11 fine-tuned, no KD",
         "overrides": {
             "distillation.enabled": False,
+            "distillation.losses.mask_kd.enabled": False,
+            "distillation.losses.feature.enabled": False,
+            "distillation.losses.boundary.enabled": False,
+            "distillation.losses.affinity.enabled": False,
+            "distillation.losses.tversky.enabled": False,
         }
     },
     "pseudo_labels": {

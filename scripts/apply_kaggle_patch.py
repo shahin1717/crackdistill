@@ -107,9 +107,8 @@ try:
                 "task": "segment",
             }
 
-            is_kd_on = (hasattr(kd_cfg, "enabled") and getattr(kd_cfg, "enabled")) or (isinstance(kd_cfg, dict) and kd_cfg.get("enabled", False))
             allow_spatial_aug = getattr(getattr(master_cfg, "train", None), "allow_spatial_aug", False)
-            if is_kd_on and not allow_spatial_aug:
+            if not allow_spatial_aug:
                 auto_overrides.update({
                     "mosaic": 0.0,
                     "close_mosaic": 0,
@@ -122,7 +121,7 @@ try:
                     "flipud": 0.0,
                     "erasing": 0.0,
                 })
-                print(f"[KD Patch] Geometric Alignment Enforced: Spatial augmentations disabled. Seed: {seed_val}")
+                print(f"[Augmentation Policy] Spatial augmentations disabled for controlled comparison (allow_spatial_aug=False). Seed: {seed_val}")
 
             if overrides and isinstance(overrides, dict):
                 auto_overrides.update(overrides)

@@ -19,7 +19,7 @@ class TestNotebookSuite(unittest.TestCase):
         notebooks = list(self.final_dir.glob("*.ipynb"))
         self.assertGreaterEqual(len(notebooks), 10, "Expected at least 10 notebooks in final_notebooks")
         for nb_path in notebooks:
-            with open(nb_path) as f:
+            with open(nb_path, encoding="utf-8") as f:
                 data = json.load(f)
             self.assertIn("cells", data, f"{nb_path.name} missing 'cells'")
             self.assertIn("metadata", data, f"{nb_path.name} missing 'metadata'")
@@ -28,7 +28,7 @@ class TestNotebookSuite(unittest.TestCase):
     def test_baseline_notebook(self):
         nb_path = self.final_dir / "00_run_baseline_clean_seed42.ipynb"
         self.assertTrue(nb_path.exists(), "00_run_baseline_clean_seed42.ipynb must exist")
-        with open(nb_path) as f:
+        with open(nb_path, encoding="utf-8") as f:
             data = json.load(f)
         full_text = "".join("".join(c.get("source", [])) for c in data["cells"])
         self.assertIn("'distillation.enabled': False", full_text)
@@ -38,7 +38,7 @@ class TestNotebookSuite(unittest.TestCase):
     def test_full_kd_box_notebook(self):
         nb_path = self.final_dir / "01_run_full_kd_box_seed42.ipynb"
         self.assertTrue(nb_path.exists(), "01_run_full_kd_box_seed42.ipynb must exist")
-        with open(nb_path) as f:
+        with open(nb_path, encoding="utf-8") as f:
             data = json.load(f)
         full_text = "".join("".join(c.get("source", [])) for c in data["cells"])
         self.assertIn("'distillation.enabled': True", full_text)
@@ -52,7 +52,7 @@ class TestNotebookSuite(unittest.TestCase):
     def test_full_kd_centroid_notebook(self):
         nb_path = self.final_dir / "01b_run_full_kd_centroid_seed42.ipynb"
         self.assertTrue(nb_path.exists(), "01b_run_full_kd_centroid_seed42.ipynb must exist")
-        with open(nb_path) as f:
+        with open(nb_path, encoding="utf-8") as f:
             data = json.load(f)
         full_text = "".join("".join(c.get("source", [])) for c in data["cells"])
         self.assertIn("'distillation.enabled': True", full_text)
