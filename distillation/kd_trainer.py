@@ -16,6 +16,20 @@ from collections import OrderedDict
 from ultralytics.models.yolo.segment.train import SegmentationTrainer
 
 
+# Spatial augmentations zeroed for controlled comparison (P0-3); shared with scripts/verify_alignment.py
+SPATIAL_AUG_OFF = {
+    "mosaic": 0.0,
+    "close_mosaic": 0,
+    "degrees": 0.0,
+    "translate": 0.0,
+    "scale": 0.0,
+    "shear": 0.0,
+    "perspective": 0.0,
+    "fliplr": 0.0,
+    "flipud": 0.0,
+    "erasing": 0.0,
+}
+
 def letterbox_content_box(orig_hw, ratio_pad, imgsz, target_hw):
     """
     Locate the real image content of a YOLO letterbox canvas inside a (target_h, target_w) grid.
@@ -25,9 +39,12 @@ def letterbox_content_box(orig_hw, ratio_pad, imgsz, target_hw):
 
     Args:
         orig_hw: (h, w) of the source image the SAM teacher saw, or None if unknown.
-        ratio_pad: Ultralytics batch ratio_pad, ((h_ratio, w_ratio), (left, top)), or None.
-            In training (rect=False, scaleup=False) the LetterBox gain is 1, so ratio_pad[0]
-            is the full source -> canvas scale.
+        ratio_pad: Ultralytics batch ratio_pad, or None. Two formats occur:
+            - eval (LetterBox as a direct transform): ((h_ratio, w_ratio), (left, top))
+            - training (augment=True): (h_ratio, w_ratio) only, with no padding entry even
+              though the canvas is still centre-letterboxed, so padding is reconstructed.
+            With rect=False and scaleup=False the LetterBox gain is 1, so the ratios are the
+            full source -> canvas scale.
         imgsz: (H, W) of the letterbox canvas.
         target_hw: (h, w) of the grid the loss is computed on.
 
@@ -39,22 +56,17 @@ def letterbox_content_box(orig_hw, ratio_pad, imgsz, target_hw):
     orig_h, orig_w = float(orig_hw[0]), float(orig_hw[1])
     target_h, target_w = int(target_hw[0]), int(target_hw[1])
 
-    if ratio_pad is not None:
-        r_info, pad_info = ratio_pad
-        if isinstance(r_info, (tuple, list)):
-            r_h, r_w = float(r_info[0]), float(r_info[1])
-        else:
-            r_h = r_w = float(r_info)
-        if isinstance(pad_info, (tuple, list)):
-            pad_w, pad_h = float(pad_info[0]), float(pad_info[1])
-        else:
-            pad_w = pad_h = float(pad_info)
+    if ratio_pad is not None and isinstance(ratio_pad[0], (tuple, list)):
+        (r_h, r_w), (pad_w, pad_h) = ratio_pad
+        r_h, r_w, pad_w, pad_h = float(r_h), float(r_w), float(pad_w), float(pad_h)
     else:
-        # Reconstruct what LetterBox would have produced
-        r = min(float(imgsz[0]) / orig_h, float(imgsz[1]) / orig_w)
-        r_h = r_w = r
-        pad_w = (float(imgsz[1]) - round(orig_w * r)) / 2.0
-        pad_h = (float(imgsz[0]) - round(orig_h * r)) / 2.0
+        if ratio_pad is not None:
+            r_h, r_w = float(ratio_pad[0]), float(ratio_pad[1])
+        else:
+            r_h = r_w = min(float(imgsz[0]) / orig_h, float(imgsz[1]) / orig_w)
+        # Centre padding, as LetterBox(center=True) applies it
+        pad_w = (float(imgsz[1]) - round(orig_w * r_w)) / 2.0
+        pad_h = (float(imgsz[0]) - round(orig_h * r_h)) / 2.0
 
     scale_y = target_h / float(imgsz[0])
     scale_x = target_w / float(imgsz[1])
@@ -303,6 +315,9 @@ class KDSegmentationTrainer(SegmentationTrainer):
                 "seed": seed_val,
                 "exist_ok": True,
                 "task": "segment",
+                # Teacher logits are stored in label-file order and paired via teacher[target_gt_idx];
+                # overlap masks re-sort batch instances by area. Set for both arms to keep parity.
+                "overlap_mask": False,
             }
 
             # Scientific Fix (P0-3): Enforce identical augmentation policy across all experimental arms.
@@ -310,18 +325,7 @@ class KDSegmentationTrainer(SegmentationTrainer):
             # Spatial scrambling (mosaic, affine, flip) without matching teacher transforms corrupts supervision coordinates.
             allow_spatial_aug = getattr(getattr(master_cfg, "train", None), "allow_spatial_aug", False)
             if not allow_spatial_aug:
-                auto_overrides.update({
-                    "mosaic": 0.0,
-                    "close_mosaic": 0,
-                    "degrees": 0.0,
-                    "translate": 0.0,
-                    "scale": 0.0,
-                    "shear": 0.0,
-                    "perspective": 0.0,
-                    "fliplr": 0.0,
-                    "flipud": 0.0,
-                    "erasing": 0.0,
-                })
+                auto_overrides.update(SPATIAL_AUG_OFF)
                 print(f"[Augmentation Policy] Spatial augmentations (mosaic, affine, flip, erasing) disabled for controlled comparison (allow_spatial_aug=False). Seed: {seed_val}")
 
             if overrides and isinstance(overrides, dict):
@@ -368,7 +372,13 @@ class KDSegmentationTrainer(SegmentationTrainer):
             elif isinstance(kd_cfg, dict):
                 is_kd_on = bool(kd_cfg.get("enabled", False))
         self.is_kd_on = is_kd_on
-        
+
+        # KD pairs batch instance k with teacher instance k (label-file order); overlap masks
+        # re-sort instances by area, so enforce per-instance masks whichever way we were built.
+        if self.is_kd_on and getattr(self.args, "overlap_mask", False):
+            print("[KD] overlap_mask=False enforced: overlap masks re-sort instances by area and break teacher pairing.")
+            self.args.overlap_mask = False
+
         if kd_cfg is not None and hasattr(kd_cfg, "temperature"):
             self.temperature = float(kd_cfg.temperature)
         else:

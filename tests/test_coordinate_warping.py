@@ -15,6 +15,7 @@ from pathlib import Path
 import cv2
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 # Ensure project root is on sys.path
 project_root = Path(__file__).resolve().parent.parent
@@ -117,6 +118,86 @@ class TestCoordinateWarping(unittest.TestCase):
                 yt, xt = np.nonzero(teacher)
                 self.assertLess(abs(ys.mean() - yt.mean()), 1.0)
                 self.assertLess(abs(xs.mean() - xt.mean()), 1.0)
+
+
+class TestTrainingPipelineGeometry(unittest.TestCase):
+    """
+    The KD loss only runs on training batches. Ultralytics' training transforms emit
+    ratio_pad as (h_ratio, w_ratio) with no padding entry, while the canvas is still
+    letterboxed. Build a tiny dataset and push it through the real training transforms.
+    """
+
+    ZERO_AUG = dict(mosaic=0.0, close_mosaic=0, degrees=0.0, translate=0.0, scale=0.0, shear=0.0,
+                    perspective=0.0, fliplr=0.0, flipud=0.0, erasing=0.0, mixup=0.0, copy_paste=0.0,
+                    hsv_h=0.0, hsv_s=0.0, hsv_v=0.0)
+
+    def setUp(self):
+        import tempfile
+        self.temp_dir = Path(tempfile.mkdtemp())
+
+    def tearDown(self):
+        import shutil
+        shutil.rmtree(self.temp_dir, ignore_errors=True)
+
+    def _dataset(self, h0, w0, polys, imgsz=512, overlap_mask=True):
+        from ultralytics.cfg import get_cfg
+        from ultralytics.data.dataset import YOLODataset
+
+        img_dir = self.temp_dir / "images" / "train"
+        lbl_dir = self.temp_dir / "labels" / "train"
+        img_dir.mkdir(parents=True, exist_ok=True)
+        lbl_dir.mkdir(parents=True, exist_ok=True)
+        rng = np.random.default_rng(0)
+        cv2.imwrite(str(img_dir / "a.jpg"), rng.integers(60, 200, (h0, w0, 3), dtype=np.uint8))
+        with open(lbl_dir / "a.txt", "w") as f:
+            for poly in polys:
+                f.write("0 " + " ".join(f"{x / w0:.6f} {y / h0:.6f}" for x, y in poly) + "\n")
+        hyp = get_cfg(overrides=dict(self.ZERO_AUG, imgsz=imgsz, overlap_mask=overlap_mask))
+        return YOLODataset(img_path=str(img_dir), data={"names": {0: "crack"}, "nc": 1, "channels": 3},
+                           imgsz=imgsz, augment=True, hyp=hyp, task="segment", rect=False, batch_size=1)
+
+    def test_training_batch_teacher_aligns_with_gt(self):
+        for (h0, w0), imgsz in [((360, 640), 512), ((640, 360), 512), ((720, 1920), 640)]:
+            with self.subTest(shape=(h0, w0), imgsz=imgsz):
+                poly = [(w0 * 0.30, h0 * 0.40), (w0 * 0.60, h0 * 0.40), (w0 * 0.60, h0 * 0.55), (w0 * 0.30, h0 * 0.55)]
+                s = self._dataset(h0, w0, [poly], imgsz=imgsz)[0]
+                self.assertEqual(tuple(s["img"].shape[-2:]), (imgsz, imgsz))
+
+                target = (256, 256)
+                gt = F.interpolate((s["masks"][0] > 0).float()[None, None], size=target, mode="nearest")[0, 0] > 0.5
+
+                src = np.zeros((h0, w0), dtype=np.uint8)
+                cv2.fillPoly(src, [np.array(poly, dtype=np.int32)], 1)
+                box = letterbox_content_box(s["ori_shape"], s["ratio_pad"], s["img"].shape[-2:], target)
+                teacher = warp_to_letterbox(torch.from_numpy(src).float()[None, None], box, target, 0.0)[0, 0] > 0.5
+
+                iou = (gt & teacher).sum().item() / max(1, (gt | teacher).sum().item())
+                self.assertGreater(iou, 0.9, f"ratio_pad={s['ratio_pad']} box={box}")
+
+    def test_instance_order_matches_label_order_only_without_overlap_masks(self):
+        """
+        Teacher logits are stored in label-file order and the KD loss uses teacher[target_gt_idx].
+        overlap_mask=True sorts batch instances by area, breaking that pairing.
+        """
+        h0, w0 = 360, 640
+        small = [(50, 50), (100, 50), (100, 80), (50, 80)]
+        big = [(300, 150), (600, 150), (600, 300), (300, 300)]
+        for overlap_mask, expected_first in [(True, "big"), (False, "small")]:
+            with self.subTest(overlap_mask=overlap_mask):
+                s = self._dataset(h0, w0, [small, big], overlap_mask=overlap_mask)[0]
+                first_box_w = float(s["bboxes"][0][2])  # normalized xywh
+                self.assertEqual("big" if first_box_w > 0.3 else "small", expected_first)
+
+    def test_trainer_disables_overlap_masks_for_both_arms(self):
+        from distillation.kd_trainer import KDSegmentationTrainer
+        from utils.config_loader import load_config, override_config
+
+        master = load_config("configs/config.yaml")
+        for enabled in (False, True):
+            with self.subTest(kd_enabled=enabled):
+                cfg = override_config(master, {"distillation.enabled": enabled, "train.epochs": 1})
+                trainer = KDSegmentationTrainer(cfg=cfg)
+                self.assertFalse(trainer.args.overlap_mask)
 
 
 class TestMissingGeometryFallback(unittest.TestCase):

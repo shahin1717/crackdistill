@@ -25,7 +25,7 @@ except Exception as e:
 
 # 2. Patch KDSegmentationTrainer.__init__ to parse master ConfigNode / dict automatically
 try:
-    from distillation.kd_trainer import KDSegmentationTrainer
+    from distillation.kd_trainer import KDSegmentationTrainer, SPATIAL_AUG_OFF
     from ultralytics.cfg import get_cfg
 
     original_init = KDSegmentationTrainer.__init__
@@ -105,22 +105,13 @@ try:
                 "seed": seed_val,
                 "exist_ok": True,
                 "task": "segment",
+                # Same as KDSegmentationTrainer: keep batch instances in teacher (label-file) order, both arms
+                "overlap_mask": False,
             }
 
             allow_spatial_aug = getattr(getattr(master_cfg, "train", None), "allow_spatial_aug", False)
             if not allow_spatial_aug:
-                auto_overrides.update({
-                    "mosaic": 0.0,
-                    "close_mosaic": 0,
-                    "degrees": 0.0,
-                    "translate": 0.0,
-                    "scale": 0.0,
-                    "shear": 0.0,
-                    "perspective": 0.0,
-                    "fliplr": 0.0,
-                    "flipud": 0.0,
-                    "erasing": 0.0,
-                })
+                auto_overrides.update(SPATIAL_AUG_OFF)
                 print(f"[Augmentation Policy] Spatial augmentations disabled for controlled comparison (allow_spatial_aug=False). Seed: {seed_val}")
 
             if overrides and isinstance(overrides, dict):

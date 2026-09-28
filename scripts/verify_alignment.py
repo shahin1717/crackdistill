@@ -65,7 +65,8 @@ def main():
 
     try:
         from ultralytics.data.dataset import YOLODataset
-        from distillation.kd_trainer import letterbox_content_box, warp_to_letterbox
+        from ultralytics.cfg import get_cfg
+        from distillation.kd_trainer import SPATIAL_AUG_OFF, letterbox_content_box, warp_to_letterbox
     except ImportError:
         print("ERROR: ultralytics is required. Run in the distill environment.")
         sys.exit(1)
@@ -78,13 +79,19 @@ def main():
     with open(ds_yaml_path) as f:
         data_cfg = yaml.safe_load(f)
 
-    # Load dataset in training mode with task='segment' and augment=False to test letterbox geometry
+    # Build the dataset through the *training* transforms (augment=True, spatial augs zeroed exactly as
+    # KDSegmentationTrainer does): the KD loss only ever sees training batches, whose ratio_pad format
+    # differs from the eval path. overlap_mask=False yields one GT mask per instance.
     img_train_dir = ds_yaml_path.parent / "images/train"
+    hyp = get_cfg(overrides=dict(SPATIAL_AUG_OFF, imgsz=512, overlap_mask=False))
     dataset = YOLODataset(
         img_path=str(img_train_dir),
         data=data_cfg,
         imgsz=512,
-        augment=False,
+        augment=True,
+        hyp=hyp,
+        rect=False,
+        batch_size=16,
         task="segment"
     )
 
@@ -284,6 +291,7 @@ def main():
         "dataset_yaml": str(ds_yaml_path.relative_to(ROOT) if ds_yaml_path.is_relative_to(ROOT) else ds_yaml_path),
         "logits_dir": str(logits_path.relative_to(ROOT) if logits_path.is_relative_to(ROOT) else logits_path),
         "imgsz": 512,
+        "pipeline": "ultralytics training transforms (augment=True, SPATIAL_AUG_OFF, overlap_mask=False)",
         "kd_grid": [256, 256],
         "binarize_threshold": 0.35,
         "n_samples": valid_samples,
