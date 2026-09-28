@@ -200,6 +200,69 @@ class TestTrainingPipelineGeometry(unittest.TestCase):
                 self.assertFalse(trainer.args.overlap_mask)
 
 
+class TestTeacherKindFallback(unittest.TestCase):
+    """The logits-dir fallback must never swap in a different teacher (e.g. SAM for the GT-soft control)."""
+
+    def test_teacher_kind(self):
+        from distillation.kd_trainer import teacher_kind
+        self.assertEqual(teacher_kind("data/teacher_logits_gt_soft/"), "gt_soft")
+        self.assertEqual(teacher_kind("/kaggle/input/x/teacher_logits_centroid"), "centroid")
+        self.assertEqual(teacher_kind("data/teacher_logits_box"), "sam_box")
+        self.assertEqual(teacher_kind("/kaggle/input/distill-datasetforme/teacher_logits"), "sam_box")
+
+    def test_empty_gt_soft_dir_does_not_redirect_to_sam_logits(self):
+        import tempfile
+        from distillation.kd_trainer import KDSegmentationTrainer
+        from utils.config_loader import ConfigNode
+
+        with tempfile.TemporaryDirectory() as tmp:
+            empty = Path(tmp) / "teacher_logits_gt_soft"
+            empty.mkdir()
+            sam = Path("/tmp/teacher_logits_box")  # one of the trainer's fallback candidates
+            created = not sam.exists()
+            sam.mkdir(exist_ok=True)
+            probe = sam / "zz_probe_logits.npy"
+            np.save(str(probe), np.zeros((1, 8, 8), np.float32))
+            try:
+                kd_cfg = ConfigNode({"enabled": True, "strict": True, "temperature": 2.0,
+                                     "losses": {"task": {"weight": 1.0}, "mask_kd": {"enabled": True},
+                                                "feature": {"enabled": False}, "boundary": {"enabled": False}}})
+                with self.assertRaises(FileNotFoundError):
+                    KDSegmentationTrainer(
+                        overrides={"model": "yolo11n-seg.pt", "data": "data/datasets/combined_yolo/dataset.yaml", "epochs": 1},
+                        kd_cfg=kd_cfg, logits_dir=empty)
+            finally:
+                probe.unlink()
+                if created:
+                    sam.rmdir()
+
+    def test_strict_kd_refuses_to_train_when_no_teacher_file_matches(self):
+        import tempfile
+        from distillation.kd_trainer import KDSegmentationTrainer
+        from utils.config_loader import ConfigNode
+
+        with tempfile.TemporaryDirectory() as tmp:
+            logits = Path(tmp) / "teacher_logits_gt_soft"
+            logits.mkdir()
+            np.save(str(logits / "misnamed.npy"), np.zeros((1, 256, 256), np.float32))  # wrong naming scheme
+            kd_cfg = ConfigNode({"enabled": True, "strict": True, "temperature": 2.0,
+                                 "losses": {"task": {"weight": 1.0}, "mask_kd": {"enabled": True},
+                                            "feature": {"enabled": False}, "boundary": {"enabled": False}}})
+            trainer = KDSegmentationTrainer(
+                overrides={"model": "yolo11n-seg.pt", "data": "data/datasets/combined_yolo/dataset.yaml", "epochs": 1},
+                kd_cfg=kd_cfg, logits_dir=logits)
+            trainer.setup_model()
+
+            def batch():
+                return {"img": torch.zeros((2, 3, 64, 64), dtype=torch.uint8), "im_file": ["a.jpg", "b.jpg"],
+                        "sam_target": [None, None], "sam_feat": [None, None]}
+
+            for _ in range(9):
+                trainer.preprocess_batch(batch())
+            with self.assertRaises(RuntimeError):
+                trainer.preprocess_batch(batch())
+
+
 class TestMissingGeometryFallback(unittest.TestCase):
     """Audit F5: a batch without ori_shape must not silently fall back to the pre-P0-1 plain resize."""
 

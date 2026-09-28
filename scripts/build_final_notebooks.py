@@ -32,6 +32,12 @@ with open('scripts/convert_crack500_uncropped.py', encoding='utf-8') as f:
 with open('scripts/generate_teacher_logits.py', encoding='utf-8') as f:
     generate_teacher_logits_code = f.read()
 
+with open('scripts/generate_gt_soft_logits.py', encoding='utf-8') as f:
+    generate_gt_soft_logits_code = f.read()
+
+# Pinned: the letterbox / instance-order fixes were verified against this exact version
+ULTRALYTICS_PIN = "ultralytics==8.4.60"
+
 
 def make_cell(cell_type, source):
     if isinstance(source, str):
@@ -74,14 +80,22 @@ def generate_training_notebook(
     overrides_dict,
     seed=42,
     prompt_type="box",
-    logits_dir="data/teacher_logits_box"
+    logits_dir="data/teacher_logits_box",
+    arm=None,
 ):
     exp_name = f"{variant_name}_seed{seed}_150ep"
+    arm = arm or variant_name
     is_kd = overrides_dict.get("distillation.enabled", True)
 
     if is_kd:
-        prompt_desc = "Bounding Box Only (offline pre-computed soft logits)" if prompt_type == "box" else "Bounding Box + Centroid Points (offline pre-computed soft logits)"
-        teacher_desc = "* **Teacher Model**: SAM 2 Large (`sam2_hiera_large.pt`, 224M parameters)"
+        prompt_desc = {
+            "box": "Bounding Box Only (offline pre-computed soft logits)",
+            "centroid": "Bounding Box + Centroid Points (offline pre-computed soft logits)",
+            "gt_soft": "None — targets are Gaussian-blurred ground truth (sigma=2.0), generated in Step 2",
+        }[prompt_type]
+        teacher_desc = ("* **Teacher Model**: None — GT-soft control (same Mask-KL loss, blurred GT instead of SAM 2)"
+                        if prompt_type == "gt_soft" else
+                        "* **Teacher Model**: SAM 2 Large (`sam2_hiera_large.pt`, 224M parameters)")
         kd_terms = []
         if overrides_dict.get("distillation.losses.mask_kd.enabled", True):
             w = overrides_dict.get("distillation.losses.mask_kd.weight", 0.9612)
@@ -104,12 +118,15 @@ def generate_training_notebook(
         loss_desc = "* **Active Losses**: Task Loss Only (BCE + Box CIoU + DFL)"
         temp_desc = "* **Distillation**: Disabled (`distillation.enabled: false`)"
 
-    if is_kd:
+    if prompt_type == "gt_soft":
+        logits_linking_code = """# 2. GT-soft control: never link SAM logits here — targets are generated from labels in Step 2
+print("[GT-Soft] Skipping teacher-logit linking; blurred-GT targets are generated in Step 2.")"""
+    elif is_kd:
+        # Only link a folder holding the same teacher; never substitute box logits for centroid ones
+        target_dirs = ["teacher_logits_centroid"] if prompt_type == "centroid" else [Path(logits_dir).name, "teacher_logits_box", "teacher_logits"]
         logits_linking_code = f"""# 2. Link precomputed teacher logits
 found_logits = False
-target_dirs = [Path("{logits_dir}").name, "teacher_logits_box", "teacher_logits"]
-if "{prompt_type}" == "centroid":
-    target_dirs = ["teacher_logits_centroid", "teacher_logits_box", "teacher_logits"]
+target_dirs = {target_dirs!r}
 
 for root, dirs, files in os.walk(str(input_dir)):
     root_p = Path(root)
@@ -131,7 +148,14 @@ if not found_logits:
         logits_linking_code = """# 2. Baseline run - no teacher logits required
 print("[Baseline] No teacher logits required for baseline control run.")"""
 
-    if is_kd:
+    if prompt_type == "gt_soft":
+        logits_verify_code = f"""# 3. Generate GT-soft targets (<stem>_logits.npy, one map per label line, label order)
+!python scripts/generate_gt_soft_logits.py --data data/datasets/crack500_yolo --out {logits_dir} --sigma 2.0
+logits_dir = Path("{logits_dir}")
+logits_count = len(list(logits_dir.glob("*_logits.npy")))
+assert logits_count > 0, f"[FATAL ERROR] 0 GT-soft logit files in {{logits_dir}}."
+print(f"[Verification Passed] {{logits_count}} GT-soft targets in {{logits_dir}} (no SAM 2 involved)")"""
+    elif is_kd:
         logits_verify_code = f"""# 3. Verify Logits
 logits_dir = Path("{logits_dir}")
 logits_count = len(list(logits_dir.glob("*_logits.npy"))) if logits_dir.exists() else 0
@@ -169,9 +193,9 @@ print("[Verification Passed] Clean baseline ready to train directly with standar
 * **Random Seed**: `{seed}`
 * **Automated Evaluation**: Evaluates in-domain cropped val and out-of-distribution uncropped val upon completion."""),
 
-        make_cell('code', """# ── Environment & Directory Initialization ──
-!mkdir -p configs utils distillation inference scripts checkpoints data/datasets data/teacher_logits_box data/teacher_logits_centroid runs results
-!pip install -q ultralytics albumentations pycocotools thop pyyaml pandas tqdm opencv-python Pillow
+        make_cell('code', f"""# ── Environment & Directory Initialization ──
+!mkdir -p configs utils distillation inference scripts checkpoints data/datasets data/teacher_logits_box runs results
+!pip install -q {ULTRALYTICS_PIN} albumentations pycocotools thop pyyaml pandas tqdm opencv-python Pillow
 """),
 
         make_cell('code', f"%%writefile configs/config.yaml\n{config_yaml}"),
@@ -185,6 +209,7 @@ print("[Verification Passed] Clean baseline ready to train directly with standar
         make_cell('code', f"%%writefile scripts/convert_crack500.py\n{convert_crack500_code}"),
         make_cell('code', f"%%writefile scripts/convert_crack500_uncropped.py\n{convert_crack500_uncropped_code}"),
         make_cell('code', f"%%writefile scripts/generate_teacher_logits.py\n{generate_teacher_logits_code}"),
+        *([make_cell('code', f"%%writefile scripts/generate_gt_soft_logits.py\n{generate_gt_soft_logits_code}")] if prompt_type == "gt_soft" else []),
 
         make_cell('code', f"""# ── Step 1: Link Kaggle Inputs (Dataset & Teacher Logits) ──
 import os, shutil
@@ -291,6 +316,7 @@ val_metrics = model.val(data="data/datasets/crack500_yolo/dataset.yaml", split="
 
 results = {{
     "experiment": "{exp_name}",
+    "arm": "{arm}",
     "seed": {seed},
     "checkpoint": str(best_pt_path),
     "checkpoint_sha256": manifest["sha256"],
@@ -346,10 +372,10 @@ This notebook evaluates trained YOLOv11n-seg checkpoints on **unseen, full-resol
 2. **Gaussian-Weighted Tiled / Sliding-Window Inference**: Dividing $2000 \\times 1500$ uncropped images into overlapping $512 \\times 512$ patches ($25\\%$ overlap, $384\\text{px}$ stride) with **2D Gaussian Apodization Blending** (eliminating border artifacts and weighting center predictions).
 3. **Head-to-Head Comparison**: Compares all available checkpoints (Baseline, Full KD, Mask KD, Foreground-Dilated, LayerKD, Focal, Combined)."""),
 
-        make_cell('code', """# ── Environment & Imports ──
+        make_cell('code', f"""# ── Environment & Imports ──
 !mkdir -p scripts configs utils distillation inference data/datasets results
-!pip install -q ultralytics albumentations pycocotools opencv-python Pillow matplotlib tqdm pandas
-import os, cv2, json, time, glob
+!pip install -q {ULTRALYTICS_PIN} albumentations pycocotools opencv-python Pillow matplotlib tqdm pandas
+""" + """import os, cv2, json, time, glob
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
@@ -540,8 +566,7 @@ This notebook benchmarks the deployed **YOLOv11n-seg** model across two architec
         make_cell('code', "%%writefile inference/__init__.py\n# inference package\nfrom inference.tiled_inference import tiled_predict_image_gaussian, create_gaussian_weight_map\n"),
         make_cell('code', f"%%writefile inference/tiled_inference.py\n{tiled_inference_code}"),
 
-        make_cell('code', """!pip install -q ultralytics thop
-import time, torch
+        make_cell('code', f"!pip install -q {ULTRALYTICS_PIN} thop\n" + """import time, torch
 import numpy as np
 from pathlib import Path
 from ultralytics import YOLO
@@ -619,6 +644,56 @@ print("=" * 68)
     return make_nb(cells)
 
 
+# Confirmatory suite (see EXPERIMENTS.md). Arms share seeds so results pair by seed.
+# Tier 1: baseline and Mask-KD x 5 seeds, GT-soft x 3; GT-soft seeds 3-4 are Tier 2 (only if KD beats baseline).
+SEEDS = {"baseline": (0, 1, 2, 3, 4), "mask_kd": (0, 1, 2, 3, 4), "gt_soft": (0, 1, 2, 3, 4)}
+TIER1_SEEDS = {"baseline": (0, 1, 2, 3, 4), "mask_kd": (0, 1, 2, 3, 4), "gt_soft": (0, 1, 2)}
+
+# Mask-KD and the GT-soft control share one config; only the teacher targets differ.
+# Hyper-parameters are fixed in advance (not re-tuned on the corrected pipeline).
+CFG_MASK_KD = {
+    "distillation.enabled": True,
+    "distillation.temperature": 3.7769,
+    "distillation.progressive.enabled": False,
+    "distillation.losses.task.weight": 1.0,
+    "distillation.losses.mask_kd.enabled": True,
+    "distillation.losses.mask_kd.weight": 0.9612,
+    "distillation.losses.mask_kd.focused": False,
+    "distillation.losses.mask_kd.high_res": False,
+    "distillation.losses.feature.enabled": False,
+    "distillation.losses.boundary.enabled": False,
+    "distillation.losses.affinity.enabled": False,
+    "distillation.losses.tversky.enabled": False,
+    "train.epochs": 150,
+    "train.amp": False,
+}
+
+CFG_BASELINE = {
+    "distillation.enabled": False,
+    "distillation.losses.mask_kd.enabled": False,
+    "distillation.losses.feature.enabled": False,
+    "distillation.losses.boundary.enabled": False,
+    "distillation.losses.affinity.enabled": False,
+    "distillation.losses.tversky.enabled": False,
+    "train.epochs": 150,
+    "train.amp": False,
+}
+
+ARMS = [
+    # (file prefix, arm, title, description, config, prompt_type, logits_dir)
+    ("1_baseline", "baseline", "Baseline (No KD)",
+     "YOLOv11n-seg fine-tuned on Crack500 with the task loss only. Lower-bound control.",
+     CFG_BASELINE, "none", "data/teacher_logits_box"),
+    ("2_mask_kd", "mask_kd", "Mask-KD from SAM 2 (Box Prompts)",
+     "Task loss + Bernoulli Mask-KL to cached SAM 2 Large logits (T=3.7769, W=0.9612).",
+     CFG_MASK_KD, "box", "data/teacher_logits_box"),
+    ("3_gt_soft", "gt_soft", "GT-Soft Control (Blurred Ground Truth)",
+     "Identical Mask-KL loss, but the targets are Gaussian-blurred ground truth (SVLS-style, sigma=2.0, logits "
+     "capped at +-14 like the SAM background) instead of SAM 2. Separates teacher knowledge from label softening.",
+     CFG_MASK_KD, "gt_soft", "data/teacher_logits_gt_soft"),
+]
+
+
 def main():
     final_dir = Path("final_notebooks")
     final_dir.mkdir(parents=True, exist_ok=True)
@@ -628,407 +703,57 @@ def main():
             json.dump(nb, f, indent=1, ensure_ascii=False)
         print(f"✓ Created final_notebooks/{filename}")
 
-    # 0. Clean Baseline Fine-Tuning (Lower Bound Control)
-    cfg_baseline = {
-        "distillation.enabled": False,
-        "distillation.losses.mask_kd.enabled": False,
-        "distillation.losses.feature.enabled": False,
-        "distillation.losses.boundary.enabled": False,
-        "distillation.losses.affinity.enabled": False,
-        "distillation.losses.tversky.enabled": False,
-        "train.epochs": 150,
-        "train.amp": False
-    }
-    nb0 = generate_training_notebook(
-        "baseline_finetune_clean",
-        "Baseline Fine-Tuning (No KD Lower-Bound Control)",
-        "Standard YOLOv11n-seg fine-tuned directly on Crack500 without knowledge distillation. Serves as the experimental lower-bound control.",
-        cfg_baseline,
-        seed=42,
-        prompt_type="none"
-    )
-    save_nb("00_run_baseline_clean_seed42.ipynb", nb0)
+    for prefix, arm, title, description, cfg, prompt_type, logits_dir in ARMS:
+        for seed in SEEDS[arm]:
+            nb = generate_training_notebook(
+                arm, title, description, cfg,
+                seed=seed, prompt_type=prompt_type, logits_dir=logits_dir, arm=arm,
+            )
+            save_nb(f"{prefix}_seed{seed}.ipynb", nb)
 
-    # 0b. Clean Baseline Fine-Tuning (Seed 123 for Paired Multi-Seed Analysis)
-    nb0b = generate_training_notebook(
-        "baseline_finetune_clean_seed123",
-        "Baseline Fine-Tuning (Seed 123 Control)",
-        "Standard YOLOv11n-seg fine-tuned directly on Crack500 without knowledge distillation with seed=123. Used for paired multi-seed statistical significance testing.",
-        cfg_baseline,
-        seed=123,
-        prompt_type="none"
-    )
-    save_nb("00b_run_baseline_clean_seed123.ipynb", nb0b)
+    save_nb("4_benchmark_speed.ipynb", generate_benchmark_notebook())
 
-    # 1. Full KD Pipeline — Bounding Box Prompts
-    cfg_full_kd_box = {
-        "distillation.enabled": True,
-        "distillation.temperature": 3.7769,
-        "distillation.progressive.enabled": False,
-        "distillation.losses.task.weight": 1.0,
-        "distillation.losses.mask_kd.enabled": True,
-        "distillation.losses.mask_kd.weight": 0.9612,
-        "distillation.losses.mask_kd.focused": False,
-        "distillation.losses.mask_kd.high_res": False,
-        "distillation.losses.feature.enabled": True,
-        "distillation.losses.feature.method": "cwd",
-        "distillation.losses.feature.weight": 1.8658,
-        "distillation.losses.feature.temperature": 4.0,
-        "distillation.losses.feature.layers": [16, 19, 22],
-        "distillation.losses.boundary.enabled": True,
-        "distillation.losses.boundary.weight": 0.8055,
-        "teacher.logits_dir": "data/teacher_logits_box/"
-    }
-    nb_full_box = generate_training_notebook(
-        "full_kd_box_T3.7769_W0.9612_CWD_BND",
-        "Full KD Pipeline — Bounding Box Prompts (Mask-KL + Neck CWD + Boundary BCE)",
-        "The primary full distillation pipeline combining Bernoulli Mask-KL divergence (W=0.9612), PANet Neck Channel-Wise Distillation on layers [16, 19, 22] (W=1.8658), and Boundary Loss (W=0.8055) using bounding box teacher prompts.",
-        cfg_full_kd_box,
-        seed=42,
-        prompt_type="box",
-        logits_dir="data/teacher_logits_box"
-    )
-    save_nb("01_run_full_kd_box_seed42.ipynb", nb_full_box)
+    def seeds_txt(arm):
+        tier2 = [s for s in SEEDS[arm] if s not in TIER1_SEEDS[arm]]
+        return ", ".join(map(str, TIER1_SEEDS[arm])) + (f" (Tier 2: {', '.join(map(str, tier2))})" if tier2 else "")
+    readme_content = f"""# CrackDistill — Kaggle notebooks (confirmatory suite)
 
-    # 1b. Full KD Pipeline — Bounding Box + Centroid Point Prompts
-    cfg_full_kd_centroid = {
-        "distillation.enabled": True,
-        "distillation.temperature": 3.7769,
-        "distillation.progressive.enabled": False,
-        "distillation.losses.task.weight": 1.0,
-        "distillation.losses.mask_kd.enabled": True,
-        "distillation.losses.mask_kd.weight": 0.9612,
-        "distillation.losses.mask_kd.focused": False,
-        "distillation.losses.mask_kd.high_res": False,
-        "distillation.losses.feature.enabled": True,
-        "distillation.losses.feature.method": "cwd",
-        "distillation.losses.feature.weight": 1.8658,
-        "distillation.losses.feature.temperature": 4.0,
-        "distillation.losses.feature.layers": [16, 19, 22],
-        "distillation.losses.boundary.enabled": True,
-        "distillation.losses.boundary.weight": 0.8055,
-        "teacher.logits_dir": "data/teacher_logits_centroid/"
-    }
-    nb_full_centroid = generate_training_notebook(
-        "full_kd_centroid_T3.7769_W0.9612_CWD_BND",
-        "Full KD Pipeline — Box + Centroid Prompts (Mask-KL + Neck CWD + Boundary BCE)",
-        "The composite full distillation pipeline combining Bernoulli Mask-KL divergence (W=0.9612), PANet Neck Channel-Wise Distillation on layers [16, 19, 22] (W=1.8658), and Boundary Loss (W=0.8055) using bounding box + centroid point teacher prompts.",
-        cfg_full_kd_centroid,
-        seed=42,
-        prompt_type="centroid",
-        logits_dir="data/teacher_logits_centroid"
-    )
-    save_nb("01b_run_full_kd_centroid_seed42.ipynb", nb_full_centroid)
+Generated by `scripts/build_final_notebooks.py`; do not edit by hand. Each notebook is self-contained
+(source files are embedded with `%%writefile`) and pins `{ULTRALYTICS_PIN}`.
 
-    # 1c. Seed 42 Mask-KD Locked Baseline (Isolated Mask Loss)
-    cfg_seed42 = {
-        "distillation.enabled": True,
-        "distillation.temperature": 3.7769,
-        "distillation.progressive.enabled": False,
-        "distillation.losses.task.weight": 1.0,
-        "distillation.losses.mask_kd.enabled": True,
-        "distillation.losses.mask_kd.weight": 0.9612,
-        "distillation.losses.mask_kd.focused": False,
-        "distillation.losses.feature.enabled": False,
-        "distillation.losses.boundary.enabled": False
-    }
-    nb1 = generate_training_notebook(
-        "prod_mask_kd_box_only_T3.7769_W0.9612",
-        "Production Mask KD (Isolated Mask-KL Baseline)",
-        "Standard uniform Soft Mask-KL Divergence over all output logits.",
-        cfg_seed42,
-        seed=42,
-        prompt_type="box",
-        logits_dir="data/teacher_logits_box"
-    )
-    save_nb("01_run_mask_kd_production_seed42.ipynb", nb1)
+| Notebook | Arm | Seeds | ~T4 time |
+| :--- | :--- | :--- | :---: |
+| `1_baseline_seed<S>.ipynb` | Baseline, task loss only | {seeds_txt("baseline")} | ~3 h |
+| `2_mask_kd_seed<S>.ipynb` | Mask-KD from SAM 2 box-prompt logits | {seeds_txt("mask_kd")} | ~3 h |
+| `3_gt_soft_seed<S>.ipynb` | Same loss, blurred-GT targets (generated in-notebook) | {seeds_txt("gt_soft")} | ~3 h |
 
-    # 2. Seed 123 Multi-Seed Run
-    nb2 = generate_training_notebook(
-        "prod_mask_kd_box_only_T3.7769_W0.9612",
-        "Production Mask KD (Multi-Seed Verification)",
-        "Standard uniform Soft Mask-KL Divergence over all output logits with Seed 123.",
-        cfg_seed42,
-        seed=123,
-        prompt_type="box",
-        logits_dir="data/teacher_logits_box"
-    )
-    save_nb("02_run_mask_kd_production_seed123.ipynb", nb2)
+Tier 1 = 13 runs (~39 T4-hours). Run Tier 2 only if the Mask-KD minus baseline CI excludes 0 (see `EXPERIMENTS.md`).
+| `4_benchmark_speed.ipynb` | Single-tile and measured full-scene latency | — | ~5 min |
 
-    # 3. Research Candidate 1: Foreground-Dilated Mask-KL
-    cfg_dilated = {
-        "distillation.enabled": True,
-        "distillation.temperature": 3.7769,
-        "distillation.progressive.enabled": False,
-        "distillation.losses.task.weight": 1.0,
-        "distillation.losses.mask_kd.enabled": True,
-        "distillation.losses.mask_kd.weight": 0.9612,
-        "distillation.losses.mask_kd.focused": True,
-        "distillation.losses.feature.enabled": False,
-        "distillation.losses.boundary.enabled": False
-    }
-    nb3 = generate_training_notebook(
-        "exp_foreground_dilated_mask_kd_T3.7769_W0.9612",
-        "Research Variant: Foreground-Dilated Mask-KL",
-        "Focuses KL divergence specifically on the crack core and an 8-pixel dilation context band, eliminating 99% background asphalt gradient dilution.",
-        cfg_dilated,
-        seed=42,
-        prompt_type="box",
-        logits_dir="data/teacher_logits_box"
-    )
-    save_nb("03_run_foreground_dilated_kd.ipynb", nb3)
+## Run on Kaggle
+1. **File → Import Notebook**, upload one `.ipynb`.
+2. Settings: **GPU T4** (one GPU is used), **Internet ON**.
+3. **+ Add Input**: the dataset with `datasets/crack500` and `teacher_logits` (e.g. `distill-datasetforme`).
+   The GT-soft notebooks never read SAM logits; they generate their own targets.
+4. **Save Version → Save & Run All (Commit)**.
+5. From **Output**, download `results/<arm>_seed<S>_150ep.json` and
+   `runs/segment/crack_distill/<arm>_seed<S>_150ep/weights/best.pt`.
 
-    # 4. Research Candidate 2: Spatial Pixel Affinity KD
-    cfg_affinity = {
-        "distillation.enabled": True,
-        "distillation.temperature": 3.7769,
-        "distillation.progressive.enabled": False,
-        "distillation.losses.task.weight": 1.0,
-        "distillation.losses.mask_kd.enabled": True,
-        "distillation.losses.mask_kd.weight": 0.9612,
-        "distillation.losses.mask_kd.focused": False,
-        "distillation.losses.affinity.enabled": True,
-        "distillation.losses.affinity.weight": 0.5,
-        "distillation.losses.feature.enabled": False,
-        "distillation.losses.boundary.enabled": False
-    }
-    nb4 = generate_training_notebook(
-        "exp_pixel_affinity_kd_T3.7769_W0.9612",
-        "Research Variant: Spatial Pixel Affinity / Relation KD",
-        "Penalizes broken/dashed crack predictions by distilling 4-directional spatial difference gradients (affinity) alongside Mask-KL.",
-        cfg_affinity,
-        seed=42,
-        prompt_type="box",
-        logits_dir="data/teacher_logits_box"
-    )
-    save_nb("04_run_pixel_affinity_kd.ipynb", nb4)
+## Check the log before trusting a run
+- All arms: `Seed: <S>`, `mosaic=0.0` and `overlap_mask=False` in the Ultralytics args.
+- Baseline: `Clean Baseline Control: Native YOLO setup` and no `KD losses computed` lines.
+- Mask-KD / GT-soft: `KD losses computed: mask_kd: ...`; never `Redirecting logits_dir`,
+  `Missing letterbox metadata` or `No teacher logits ... matched`.
 
-    # 5. Research Candidate 3: Multi-Scale 512x512 Logit Matching
-    cfg_multiscale = {
-        "distillation.enabled": True,
-        "distillation.temperature": 3.7769,
-        "distillation.progressive.enabled": False,
-        "distillation.losses.task.weight": 1.0,
-        "distillation.losses.mask_kd.enabled": True,
-        "distillation.losses.mask_kd.weight": 0.9612,
-        "distillation.losses.mask_kd.focused": False,
-        "distillation.losses.mask_kd.high_res": True,
-        "distillation.losses.feature.enabled": False,
-        "distillation.losses.boundary.enabled": False
-    }
-    nb5 = generate_training_notebook(
-        "exp_multiscale_512_mask_kd_T3.7769_W0.9612",
-        "Research Variant: Multi-Scale 512x512 Mask Logits",
-        "Upsamples SAM 2 teacher logits to full 512x512 resolution for sub-pixel boundary matching against YOLO prototypes.",
-        cfg_multiscale,
-        seed=42,
-        prompt_type="box",
-        logits_dir="data/teacher_logits_box"
-    )
-    save_nb("05_run_multiscale_mask_kd.ipynb", nb5)
-
-    # 6. Research Candidate 4: Multi-Scale PANet Neck LayerKD (Channel-Wise Distillation)
-    cfg_layer_kd = {
-        "distillation.enabled": True,
-        "distillation.temperature": 3.7769,
-        "distillation.progressive.enabled": False,
-        "distillation.losses.task.weight": 1.0,
-        "distillation.losses.mask_kd.enabled": True,
-        "distillation.losses.mask_kd.weight": 0.9612,
-        "distillation.losses.mask_kd.focused": False,
-        "distillation.losses.mask_kd.high_res": False,
-        "distillation.losses.feature.enabled": True,
-        "distillation.losses.feature.method": "cwd",
-        "distillation.losses.feature.weight": 1.8658,
-        "distillation.losses.feature.temperature": 4.0,
-        "distillation.losses.feature.layers": [16, 19, 22],
-        "distillation.losses.boundary.enabled": False
-    }
-    nb6 = generate_training_notebook(
-        "exp_multiscale_layer_cwd_kd_T3.7769_W0.9612",
-        "Research Variant: Multi-Scale Neck LayerKD (Channel-Wise Distillation)",
-        "Distills multi-scale intermediate representations from SAM 2 FPN into YOLOv11 PANet Neck layers (16, 19, 22) via scale-invariant Channel-Wise Distillation (CWD).",
-        cfg_layer_kd,
-        seed=42,
-        prompt_type="box",
-        logits_dir="data/teacher_logits_box"
-    )
-    save_nb("06_run_multiscale_layer_kd.ipynb", nb6)
-
-    # 9a. Research Candidate 5: Combined Affinity + Foreground-Dilated KD
-    cfg_combined = {
-        "distillation.enabled": True,
-        "distillation.temperature": 3.7769,
-        "distillation.progressive.enabled": False,
-        "distillation.losses.task.weight": 1.0,
-        "distillation.losses.mask_kd.enabled": True,
-        "distillation.losses.mask_kd.weight": 0.9612,
-        "distillation.losses.mask_kd.focused": True,
-        "distillation.losses.affinity.enabled": True,
-        "distillation.losses.affinity.weight": 0.5,
-        "distillation.losses.feature.enabled": False,
-        "distillation.losses.boundary.enabled": False
-    }
-    nb9a = generate_training_notebook(
-        "exp_combined_affinity_dilated_kd_T3.7769_W0.9612",
-        "Research Variant: Combined Spatial Affinity + Foreground-Dilated KD",
-        "Fuses the two empirical winners from production runs: Foreground-Dilated Mask-KL and 4-Directional Spatial Pixel Affinity.",
-        cfg_combined,
-        seed=42,
-        prompt_type="box",
-        logits_dir="data/teacher_logits_box"
-    )
-    save_nb("09_run_combined_affinity_dilated_kd.ipynb", nb9a)
-
-    # 9b. Research Candidate 6: Focal Mask-KL
-    cfg_focal = {
-        "distillation.enabled": True,
-        "distillation.temperature": 3.7769,
-        "distillation.progressive.enabled": False,
-        "distillation.losses.task.weight": 1.0,
-        "distillation.losses.mask_kd.enabled": True,
-        "distillation.losses.mask_kd.weight": 0.9612,
-        "distillation.losses.mask_kd.focal": True,
-        "distillation.losses.mask_kd.focal_gamma": 2.0,
-        "distillation.losses.feature.enabled": False,
-        "distillation.losses.boundary.enabled": False
-    }
-    nb9b = generate_training_notebook(
-        "exp_focal_mask_kd_gamma2.0_T3.7769_W0.9612",
-        "Research Variant: Focal Modulated Mask-KL (Gamma=2.0)",
-        "Applies soft focal modulation to Bernoulli Mask-KL loss, penalizing hard ambiguous crack boundary pixels.",
-        cfg_focal,
-        seed=42,
-        prompt_type="box",
-        logits_dir="data/teacher_logits_box"
-    )
-    save_nb("09_run_focal_mask_kd.ipynb", nb9b)
-
-    # 10. Ultimate OOD Candidate: High-Resolution (768px) Neck LayerKD + Foreground-Dilated Mask-KL
-    cfg_layerkd_dilated_hires = {
-        "distillation.enabled": True,
-        "distillation.temperature": 3.7769,
-        "distillation.progressive.enabled": False,
-        "distillation.losses.task.weight": 1.0,
-        "distillation.losses.mask_kd.enabled": True,
-        "distillation.losses.mask_kd.weight": 0.9612,
-        "distillation.losses.mask_kd.focused": True,
-        "distillation.losses.mask_kd.high_res": False,
-        "distillation.losses.affinity.enabled": False,
-        "distillation.losses.feature.enabled": True,
-        "distillation.losses.feature.method": "cwd",
-        "distillation.losses.feature.weight": 0.25,
-        "distillation.losses.feature.temperature": 4.0,
-        "distillation.losses.feature.layers": [16, 19, 22],
-        "distillation.losses.boundary.enabled": False,
-        "student.imgsz": 768,
-        "data.image_size": 768,
-        "data.batch_size": 8,
-        "train.lr": 0.001,
-        "train.epochs": 150,
-        "train.amp": False
-    }
-    nb10 = generate_training_notebook(
-        "exp_hires_layerkd_dilated_768_T3.7769_W0.9612",
-        "Ultimate OOD Candidate: High-Resolution (768px) Neck LayerKD + Foreground-Dilated Mask-KL",
-        "Fuses the #1 feature-level teacher (CWD on PANet layers 16, 19, 22) with the #1 mask-level background suppressor (8px context band) trained at 768x768 to prevent sub-pixel hairline crack collapse on uncropped pavement imagery.",
-        cfg_layerkd_dilated_hires,
-        seed=42,
-        prompt_type="box",
-        logits_dir="data/teacher_logits_box"
-    )
-    save_nb("10_run_layerkd_dilated_hires.ipynb", nb10)
-
-    # 11. GT-Soft Supervision Control Arm (P2-2)
-    cfg_gt_soft = {
-        "distillation.enabled": True,
-        "distillation.temperature": 3.7769,
-        "distillation.progressive.enabled": False,
-        "distillation.losses.task.weight": 1.0,
-        "distillation.losses.mask_kd.enabled": True,
-        "distillation.losses.mask_kd.weight": 0.9612,
-        "distillation.losses.feature.enabled": False,
-        "distillation.losses.boundary.enabled": False,
-        "distillation.losses.affinity.enabled": False,
-        "distillation.losses.tversky.enabled": False,
-        "train.epochs": 150,
-        "train.amp": False
-    }
-    nb11 = generate_training_notebook(
-        "gt_soft_control",
-        "GT-Soft Supervision Control Arm (Gaussian-Softened Pseudo-Logits)",
-        "Control experiment distilling from Gaussian-softened (sigma=2.0) ground-truth masks rather than SAM 2 predictions. Isolates label softening regularization from SAM 2 foundation priors.",
-        cfg_gt_soft,
-        seed=42,
-        prompt_type="box",
-        logits_dir="data/teacher_logits_gt_soft"
-    )
-    save_nb("11_run_gt_soft_control_seed42.ipynb", nb11)
-
-    # 7. OOD & Tiled Inference Notebook
-    nb7 = generate_ood_tiled_eval_notebook()
-    save_nb("07_eval_ood_and_tiled_inference.ipynb", nb7)
-
-    # 8. Benchmark Speed Notebook
-    nb8 = generate_benchmark_notebook()
-    save_nb("08_benchmark_speed_and_profile.ipynb", nb8)
-
-    # README Guide
-    readme_content = """# 🚀 Crack-Distill: Complete Production & Research Suite
-
-This folder contains the complete, self-contained suite of Kaggle notebooks covering our **clean baseline control**, **full composite KD pipeline**, **locked production recipe**, and **advanced research candidates**.
-
----
-
-## 📂 Notebook Suite Directory
-
-| Notebook | Purpose & Recipe | Expected Runtime | Target Output |
-| :--- | :--- | :---: | :--- |
-| **`00_run_baseline_clean_seed42.ipynb`** | **Clean Baseline Control (Seed 42)**: Lower-bound control — pure YOLOv11n-seg fine-tuned without KD. | ~2.5–3.0 hrs | `results/baseline_finetune_clean_seed42_150ep.json` |
-| **`00b_run_baseline_clean_seed123.ipynb`** | **Clean Baseline Control (Seed 123)**: Paired multi-seed control for rigorous variance testing. | ~2.5–3.0 hrs | `results/baseline_finetune_clean_seed123_150ep.json` |
-| **`01_run_full_kd_box_seed42.ipynb`** | **Full KD Pipeline — Box Prompts**: Full composite KD (Mask-KL $W=0.9612$, Neck CWD on layers [16, 19, 22] $W=1.8658$, Boundary $W=0.8055$). | ~2.8–3.2 hrs | `results/full_kd_box_T3.7769_W0.9612_CWD_BND_seed42_150ep.json` |
-| **`01b_run_full_kd_centroid_seed42.ipynb`** | **Full KD Pipeline — Box + Centroid Prompts**: Full composite KD with Box + Centroid point prompt supervision. | ~2.8–3.2 hrs | `results/full_kd_centroid_T3.7769_W0.9612_CWD_BND_seed42_150ep.json` |
-| **`01_run_mask_kd_production_seed42.ipynb`** | **Isolated Mask-KL Baseline (Seed 42)**: Uniform Mask-KL only ($\\\\tau=3.7769, W=0.9612$, box prompts). | ~2.5–3.0 hrs | `results/prod_mask_kd_box_only_T3.7769_W0.9612_seed42_150ep.json` |
-| **`02_run_mask_kd_production_seed123.ipynb`** | **Multi-Seed Verification (Seed 123)**: Statistical variance test for Mask-KL. | ~2.5–3.0 hrs | `results/prod_mask_kd_box_only_T3.7769_W0.9612_seed123_150ep.json` |
-| **`03_run_foreground_dilated_kd.ipynb`** | **Research Variant 1 (Foreground-Dilated KL)**: Focuses gradient on crack core + 8px context band (solves 99% asphalt background dilution). | ~2.5–3.0 hrs | `results/exp_foreground_dilated_mask_kd_T3.7769_W0.9612_seed42_150ep.json` |
-| **`04_run_pixel_affinity_kd.ipynb`** | **Research Variant 2 (Spatial Pixel Affinity)**: Captures topological crack continuity via 4-directional spatial difference matching. | ~2.5–3.0 hrs | `results/exp_pixel_affinity_kd_T3.7769_W0.9612_seed42_150ep.json` |
-| **`05_run_multiscale_mask_kd.ipynb`** | **Research Variant 3 (512x512 High-Res Matching)**: Full $512 \\\\times 512$ sub-pixel logit alignment. | ~2.5–3.0 hrs | `results/exp_multiscale_512_mask_kd_T3.7769_W0.9612_seed42_150ep.json` |
-| **`06_run_multiscale_layer_kd.ipynb`** | **Research Variant 4 (Multi-Scale Neck LayerKD)**: Intermediate Channel-Wise Distillation (CWD) on PANet Neck layers (16, 19, 22). | ~2.8–3.2 hrs | `results/exp_multiscale_layer_cwd_kd_T3.7769_W0.9612_seed42_150ep.json` |
-| **`07_eval_ood_and_tiled_inference.ipynb`** | **OOD & Tiled Inference Engine**: Evaluates checkpoints on uncropped images with direct resizing vs Gaussian-weighted tiled sliding window ($512 \\\\times 512$ native patches). | ~5–10 mins | `results/ood_eval_summary.json` |
-| **`08_benchmark_speed_and_profile.ipynb`** | **Two-Level Speed Benchmark**: Benchmarks Single-Tile (107.8 FPS / 9.27 ms) and Full-Scene Tiled Reconstruction (serial, measured end-to-end). | ~2 mins | Latency & FPS Report |
-| **`09_run_combined_affinity_dilated_kd.ipynb`** | **Research Variant 5 (Combined Affinity + Dilated)**: Multi-loss combination. | ~2.8–3.2 hrs | `results/exp_combined_affinity_dilated_kd_T3.7769_W0.9612_seed42_150ep.json` |
-| **`09_run_focal_mask_kd.ipynb`** | **Research Variant 6 (Focal Mask-KL)**: Soft focal modulation ($\\\\gamma=2.0$). | ~2.5–3.0 hrs | `results/exp_focal_mask_kd_gamma2.0_T3.7769_W0.9612_seed42_150ep.json` |
-| **`10_run_layerkd_dilated_hires.ipynb`** | **Ultimate OOD Candidate (768px LayerKD + Dilated)**: Multi-scale Neck CWD + Foreground Dilated Mask-KL at $768 \\\\times 768$. | ~3.0–3.5 hrs | `results/exp_hires_layerkd_dilated_768_T3.7769_W0.9612.json` |
-| **`11_run_gt_soft_control_seed42.ipynb`** | **GT-Soft Control Arm (P2-2)**: Distills from Gaussian-softened ($\\\\sigma=2.0$) ground truth to isolate regularizer effect from SAM 2 priors. | ~2.5–3.0 hrs | `results/gt_soft_control_seed42_150ep.json` |
-
----
-
-## 📥 Exact Kaggle Inputs & Hardware Mapping Table
-
-| Notebook File | Required Kaggle Dataset | Required Model Checkpoint | Accelerator Setting | Internet | How to Run in Kaggle |
-| :--- | :--- | :--- | :---: | :---: | :--- |
-| **`00_run_baseline_clean_seed42.ipynb`** | `distill_datasetforme` (Crack500 raw or YOLO format) | *None* (trains automatically from standard pre-trained YOLOv11) | **GPU T4 x2** or **P100** | **ON** | 1. Click **+ Add Data** $\\\\rightarrow$ attach `distill_datasetforme`<br>2. Click **Run All** |
-| **`00b_run_baseline_clean_seed123.ipynb`** | `distill_datasetforme` (Crack500 raw or YOLO format) | *None* (trains automatically from standard pre-trained YOLOv11) | **GPU T4 x2** or **P100** | **ON** | 1. Click **+ Add Data** $\\\\rightarrow$ attach `distill_datasetforme`<br>2. Click **Run All** |
-| **`01_run_full_kd_box_seed42.ipynb`** | `distill_datasetforme` (Crack500 raw + teacher logits) | *None* (trains automatically from standard pre-trained YOLOv11) | **GPU T4 x2** or **P100** | **ON** | 1. Click **+ Add Data** $\\\\rightarrow$ attach `distill_datasetforme`<br>2. Click **Run All** |
-| **`01b_run_full_kd_centroid_seed42.ipynb`** | `distill_datasetforme` (Crack500 raw + teacher logits centroid) | *None* (trains automatically from standard pre-trained YOLOv11) | **GPU T4 x2** or **P100** | **ON** | 1. Click **+ Add Data** $\\\\rightarrow$ attach dataset<br>2. Click **Run All** |
-| **`01` through `06`, `09`, `10`** | `distill_datasetforme` (Crack500 raw + teacher logits) | *None* (trains automatically from standard pre-trained YOLOv11) | **GPU T4 x2** or **P100** | **ON** | 1. Click **+ Add Data** $\\\\rightarrow$ attach `distill_datasetforme`<br>2. Click **Run All** |
-| **`11_run_gt_soft_control_seed42.ipynb`** | `distill_datasetforme` (Crack500 raw + GT-soft pseudo-logits) | *None* (trains automatically from standard pre-trained YOLOv11) | **GPU T4 x2** or **P100** | **ON** | 1. Click **+ Add Data** $\\\\rightarrow$ attach dataset<br>2. Click **Run All** |
-| **`07_eval_ood_and_tiled_inference.ipynb`** | `distill_datasetforme` (contains uncropped `valdata`/`testdata`) | **Attach Notebook 00-11 Output** (`best.pt`) via Kaggle "+ Add Data" $\\\\rightarrow$ "Your Work / Notebook Output Files" | **GPU** (any) or **CPU** | **ON** | 1. Attach dataset + output `best.pt`<br>2. Click **Run All** |
-| **`08_benchmark_speed_and_profile.ipynb`** | **None!** (benchmarks with synthetic tensors) | **None!** (auto-downloads `yolo11n-seg.pt` or uses trained `best.pt`) | **GPU** (T4 / P100) or **CPU** | **ON** | 1. No dataset needed<br>2. Click **Run All** |
-
----
-
-## ⚙️ Quick Execution Instructions
-
-1. **Upload**: In Kaggle, click **New Notebook** $\\\\rightarrow$ **File** $\\\\rightarrow$ **Import Notebook** $\\\\rightarrow$ select `.ipynb` file.
-2. **Settings**: Set Accelerator to **GPU T4 x2** or **P100**, and set Internet to **ON**.
-3. **Attach Data**: Click **+ Add Data** $\\\\rightarrow$ search `distill_datasetforme` (or your Crack500 dataset).
-4. **Execute**: Click **Run All**. Training, validation, OOD testing, and JSON metric export run automatically.
+## Final evaluation (local, once, after all training is done)
+```bash
+python scripts/evaluate_canonical_test_set.py --weights <best.pt> --arm <arm> --seed <S>   # -> results/test/
+python scripts/aggregate_multiseed_results.py --results-dir results/test --metric in_domain_mask_mAP50
+```
 """
     with open(final_dir / "README.md", "w", encoding="utf-8") as f:
         f.write(readme_content)
     print("✓ Created final_notebooks/README.md")
-
 
 if __name__ == "__main__":
     main()

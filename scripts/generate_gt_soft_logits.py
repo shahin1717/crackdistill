@@ -4,7 +4,9 @@ Generate Gaussian-Softened Ground-Truth Pseudo-Logits (GT-Soft Control Arm).
 Addresses Problem P2-2:
 - Generates soft target logits directly from ground-truth instance annotations using 2D Gaussian smoothing (sigma=2.0).
 - Establishes the empirical baseline required to prove that SAM 2 distillation gains stem from genuine foundation model priors rather than simple soft-boundary regularization.
-- Saves soft targets to data/teacher_logits_gt_soft/ in identical (M, 256, 256) float32 numpy format as SAM 2 logits.
+- Saves soft targets to data/teacher_logits_gt_soft/<stem>_logits.npy in the identical (M, 256, 256) float32
+  format and full-image coordinate span as SAM 2 logits, one map per label line in file order (the KD loss
+  pairs batch instance k with teacher[k]).
 
 Usage:
   python scripts/generate_gt_soft_logits.py --data data/datasets/crack500_yolo --out data/teacher_logits_gt_soft --sigma 2.0
@@ -20,11 +22,18 @@ import numpy as np
 from tqdm import tqdm
 
 
+# Logit cap = median background logit of the cached SAM 2 teacher (-14). The old eps=1e-4 cap (+-9.2)
+# put ~8% crack probability on every background pixel at T=3.78, i.e. background smoothing the SAM
+# targets do not have. With the cap at 14, sigma=2.0 matches SAM's mean entropy near cracks
+# (0.70 vs 0.66 bits at T=3.7769, 440 train instances).
+MAX_LOGIT = 14.0
+
+
 def generate_soft_logit_from_mask(
     mask: np.ndarray,
     sigma: float = 2.0,
     target_res: Optional[int] = None,
-    eps: float = 1e-4,
+    max_logit: float = MAX_LOGIT,
 ) -> np.ndarray:
     """
     Convert a single binary mask into a Gaussian-softened pseudo-logit.
@@ -33,15 +42,15 @@ def generate_soft_logit_from_mask(
         mask (np.ndarray): Binary mask (2D array, 0 or 1/255).
         sigma (float): Gaussian blur standard deviation.
         target_res (int, optional): Optional square resolution to resize to.
-        eps (float): Numerical safety bound for inverse sigmoid.
+        max_logit (float): Logits are clipped to [-max_logit, max_logit].
 
     Returns:
         np.ndarray: Soft logit 2D array, float32.
     """
     if target_res is not None and mask.shape[:2] != (target_res, target_res):
-        m = cv2.resize(mask.astype(np.float32), (target_res, target_res), interpolation=cv2.INTER_LINEAR)
+        m = cv2.resize(mask.astype(np.float64), (target_res, target_res), interpolation=cv2.INTER_LINEAR)
     else:
-        m = mask.astype(np.float32)
+        m = mask.astype(np.float64)
 
     if m.max() > 1.0:
         m = m / 255.0
@@ -49,7 +58,8 @@ def generate_soft_logit_from_mask(
     ksize = int(math_ceil(sigma * 6)) | 1
     ksize = max(5, min(ksize, 31))
     soft_prob = cv2.GaussianBlur(m, (ksize, ksize), sigmaX=sigma, sigmaY=sigma)
-    soft_prob = np.clip(soft_prob, eps, 1.0 - eps)
+    lo = 1.0 / (1.0 + np.exp(max_logit))  # float64: 1 - lo stays < 1
+    soft_prob = np.clip(soft_prob, lo, 1.0 - lo)
     return np.log(soft_prob / (1.0 - soft_prob)).astype(np.float32)
 
 
@@ -59,7 +69,7 @@ def generate_gt_soft_for_image(
     img_w: int = 640,
     sigma: float = 2.0,
     target_res: int = 256,
-    eps: float = 1e-4,
+    max_logit: float = MAX_LOGIT,
 ) -> np.ndarray:
     """
     Convert YOLO segmentation polygon labels into Gaussian-softened pseudo-logits.
@@ -70,7 +80,7 @@ def generate_gt_soft_for_image(
         img_w: Image canvas width.
         sigma: Gaussian smoothing parameter (default 2.0).
         target_res: Output square resolution for teacher logits (default 256).
-        eps: Probability clipping parameter for logit inversion.
+        max_logit: Logit clipping bound (see MAX_LOGIT).
 
     Returns:
         np.ndarray: Soft logit tensor of shape (M, target_res, target_res), float32.
@@ -84,25 +94,22 @@ def generate_gt_soft_for_image(
     instances = []
     for line in lines:
         parts = line.strip().split()
-        if len(parts) < 7:
+        if not parts:
             continue
-        try:
-            coords = [float(x) for x in parts[1:]]
-            pts = np.array(coords).reshape(-1, 2)
+        # Keep one map per label line, even tiny or degenerate ones, so indices match the batch
+        inst = np.zeros((img_h, img_w), dtype=np.uint8)
+        if len(parts) >= 7 and len(parts) % 2 == 1:
+            pts = np.array([float(x) for x in parts[1:]]).reshape(-1, 2)
             pts[:, 0] *= img_w
             pts[:, 1] *= img_h
-            inst = np.zeros((img_h, img_w), dtype=np.uint8)
-            cv2.fillPoly(inst, [pts.astype(np.int32)], 1)
-            if inst.sum() >= 20:
-                instances.append(inst)
-        except Exception:
-            continue
+            cv2.fillPoly(inst, [np.round(pts).astype(np.int32)], 1)
+        instances.append(inst)
 
     if not instances:
         return np.zeros((0, target_res, target_res), dtype=np.float32)
 
     logits_list = [
-        generate_soft_logit_from_mask(inst, sigma=sigma, target_res=target_res, eps=eps)
+        generate_soft_logit_from_mask(inst, sigma=sigma, target_res=target_res, max_logit=max_logit)
         for inst in instances
     ]
     return np.stack(logits_list, axis=0)
@@ -137,7 +144,7 @@ def main():
     skipped = 0
 
     for lf in tqdm(label_files, desc="GT-Soft generation"):
-        out_file = out_dir / f"{lf.stem}.npy"
+        out_file = out_dir / f"{lf.stem}_logits.npy"
         if out_file.exists():
             skipped += 1
             continue

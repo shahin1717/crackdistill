@@ -21,7 +21,7 @@ from utils.stats_analyzer import compute_stats, compare_two_arms, format_compari
 from scripts.generate_gt_soft_logits import generate_soft_logit_from_mask
 
 # P2-3 Canonical Test Evaluator
-from scripts.evaluate_canonical_test_set import compute_dice_score, load_canonical_crops
+from scripts.evaluate_canonical_test_set import compute_dice_score, load_canonical_crops, list_uncropped_scenes, load_scene
 
 # P2-5 Tiled Inference Pipeline Benchmark
 from inference.tiled_inference import benchmark_tiled_inference_pipeline
@@ -101,9 +101,61 @@ class TestP22GTSoftPseudoLogits(unittest.TestCase):
         # All logits should be strongly negative (background)
         self.assertTrue(np.all(logits < -2.0))
 
+    def test_generator_output_is_loadable_and_label_ordered(self):
+        """
+        The KD loss pairs batch instance k with teacher[k] and KDYOLODataset loads '<stem>_logits.npy':
+        every label line must yield one logit map, in file order, including tiny instances.
+        """
+        import subprocess
+        import sys
+        from distillation.kd_trainer import teacher_kind
+
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "ds"
+            (root / "images" / "train").mkdir(parents=True)
+            (root / "labels" / "train").mkdir(parents=True)
+            cv2.imwrite(str(root / "images" / "train" / "img1.jpg"), np.zeros((360, 640, 3), np.uint8))
+            tiny = "0 0.100 0.100 0.104 0.100 0.104 0.105"             # ~3x2 px, below any area filter
+            big = "0 0.300 0.400 0.700 0.400 0.700 0.600 0.300 0.600"
+            (root / "labels" / "train" / "img1.txt").write_text(f"{tiny}\n{big}\n")
+            out = Path(tmp) / "teacher_logits_gt_soft"
+            subprocess.run([sys.executable, "scripts/generate_gt_soft_logits.py", "--data", str(root),
+                            "--out", str(out)], check=True, capture_output=True)
+
+            f = out / "img1_logits.npy"
+            self.assertTrue(f.exists(), sorted(p.name for p in out.iterdir()))
+            logits = np.load(f)
+            self.assertEqual(logits.shape, (2, 256, 256))
+            # Instance 1 (big box, centred) is foreground at the canvas centre; instance 0 is not
+            self.assertGreater(logits[1, 128, 128], 0.0)
+            self.assertLess(logits[0, 128, 128], 0.0)
+            self.assertEqual(teacher_kind(out), "gt_soft")
+
 
 class TestP23CanonicalTestSet(unittest.TestCase):
     """Test suite for P2-3 canonical test set evaluation."""
+
+    def test_scene_loader_ignores_exif_and_finds_uppercase_jpg(self):
+        """Crack500 masks match raw sensor pixels; most test photos carry an EXIF rotation."""
+        from PIL import Image
+
+        with tempfile.TemporaryDirectory() as tmp:
+            d = Path(tmp)
+            raw = np.zeros((60, 80, 3), np.uint8)
+            raw[5:15, 10:30] = 255                       # marker in the raw top-left area
+            exif = Image.Exif()
+            exif[0x0112] = 3                             # rotate 180 on display
+            Image.fromarray(raw).save(d / "scene.JPG", exif=exif, quality=100)
+            mask = np.zeros((60, 80), np.uint8)
+            mask[5:15, 10:30] = 255
+            cv2.imwrite(str(d / "scene_mask.png"), mask)
+
+            scenes = list_uncropped_scenes(d)
+            self.assertEqual([p.name for p in scenes], ["scene.JPG"])
+            img, gt = load_scene(scenes[0])
+            self.assertEqual(img.shape[:2], gt.shape)
+            pred = (img[..., 0] > 127).astype(np.uint8)
+            self.assertGreater(compute_dice_score(pred, gt), 0.95)
 
     def test_compute_dice_score(self):
         # Identical masks
@@ -211,25 +263,32 @@ class TestP24MultiSeedAggregator(unittest.TestCase):
     """Test suite for multi-seed result aggregator."""
 
     def test_aggregate_results(self):
+        """Notebook Step-4 JSON: nested metrics, arm + seed fields; pairing must follow seeds, not file order."""
+        from scripts.aggregate_multiseed_results import load_runs, paired_by_seed
+
+        def run(arm, seed, v):
+            return {"arm": arm, "seed": seed, "experiment": f"{arm}_seed{seed}_150ep",
+                    "metrics_indomain": {"mask_mAP50": v + 0.3, "mask_mAP50_95": v}}
+
         with tempfile.TemporaryDirectory() as tmp_dir:
             tmp_path = Path(tmp_dir)
-            # Create two seed runs for baseline and two for mask_kd
-            r1 = {"metrics/mask_mAP50": 0.50, "metrics/mask_mAP50-95": 0.20, "metrics/box_mAP50": 0.55}
-            r2 = {"metrics/mask_mAP50": 0.52, "metrics/mask_mAP50-95": 0.22, "metrics/box_mAP50": 0.57}
-            (tmp_path / "baseline_clean_seed42.json").write_text(json.dumps(r1))
-            (tmp_path / "baseline_clean_seed123.json").write_text(json.dumps(r2))
+            # File names sort differently from seeds on purpose
+            (tmp_path / "a_baseline.json").write_text(json.dumps(run("baseline", 123, 0.22)))
+            (tmp_path / "b_baseline.json").write_text(json.dumps(run("baseline", 42, 0.20)))
+            (tmp_path / "c_kd.json").write_text(json.dumps(run("mask_kd", 42, 0.24)))
+            (tmp_path / "d_kd.json").write_text(json.dumps(run("mask_kd", 123, 0.23)))
+            (tmp_path / "notes.json").write_text(json.dumps({"no": "arm"}))
 
-            kd1 = {"metrics/mask_mAP50": 0.54, "metrics/mask_mAP50-95": 0.24, "metrics/box_mAP50": 0.59}
-            kd2 = {"metrics/mask_mAP50": 0.56, "metrics/mask_mAP50-95": 0.26, "metrics/box_mAP50": 0.61}
-            (tmp_path / "mask_kd_seed42.json").write_text(json.dumps(kd1))
-            (tmp_path / "mask_kd_seed123.json").write_text(json.dumps(kd2))
+            summary = aggregate_results(tmp_path, metric_key="mask_mAP50_95")
+            self.assertEqual(summary["baseline"], [0.20, 0.22])   # ordered by seed 42, 123
+            seeds, b, t = paired_by_seed(load_runs(tmp_path, "mask_mAP50_95"), "baseline", "mask_kd")
+            self.assertEqual(seeds, [42, 123])
+            self.assertEqual(b, [0.20, 0.22])
+            self.assertEqual(t, [0.24, 0.23])
 
-            summary = aggregate_results(tmp_path)
-            self.assertIn("baseline_clean", summary)
-            self.assertIn("mask_kd", summary)
-            self.assertEqual(len(summary["baseline_clean"]), 2)
-            self.assertAlmostEqual(float(np.mean(summary["baseline_clean"])), 0.51, places=4)
-
+            (tmp_path / "e_dup.json").write_text(json.dumps(run("mask_kd", 42, 0.99)))
+            with self.assertRaises(ValueError):
+                load_runs(tmp_path, "mask_mAP50_95")
 
 if __name__ == "__main__":
     unittest.main()

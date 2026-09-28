@@ -30,6 +30,16 @@ SPATIAL_AUG_OFF = {
     "erasing": 0.0,
 }
 
+def teacher_kind(logits_dir) -> str:
+    """Which teacher a logits directory holds, from its name: 'gt_soft', 'centroid' or 'sam_box'."""
+    name = Path(str(logits_dir).rstrip("/")).name.lower()
+    if "gt_soft" in name:
+        return "gt_soft"
+    if "centroid" in name:
+        return "centroid"
+    return "sam_box"
+
+
 def letterbox_content_box(orig_hw, ratio_pad, imgsz, target_hw):
     """
     Locate the real image content of a YOLO letterbox canvas inside a (target_h, target_w) grid.
@@ -393,6 +403,7 @@ class KDSegmentationTrainer(SegmentationTrainer):
         self._total_instances_count = 0
         self._no_logits_warned = False
         self._geom_fallback_warned = False
+        self._kd_unmatched_batches = 0
         self._sam_targets = {}   # image_stem → soft target tensor (M, 256, 256)
         self._sam_features = {}  # image_stem → dict of features
         self._hook_handles = []
@@ -421,7 +432,11 @@ class KDSegmentationTrainer(SegmentationTrainer):
                     if d.is_dir() and d not in candidates:
                         candidates.append(d)
 
+            wanted_kind = teacher_kind(self.logits_dir)
             for candidate in candidates:
+                # Never substitute a different teacher (e.g. SAM logits for the GT-soft control arm)
+                if teacher_kind(candidate) != wanted_kind:
+                    continue
                 if candidate.exists():
                     c_files = list(candidate.glob("*.npy"))
                     if len(c_files) > 0:
@@ -753,11 +768,21 @@ class KDSegmentationTrainer(SegmentationTrainer):
                     k: torch.nan_to_num(v.to(self.device), nan=0.0, posinf=0.0, neginf=0.0) for k, v in sam_feats_list[idx].items()
                 }
 
-        if self._current_paths and not self._sam_targets and not self._no_logits_warned:
-            stems = [Path(p).stem for p in self._current_paths[:3]]
-            print(f"[KD] Warning: no SAM logits matched batch stems {stems}. "
-                  f"Run: python scripts/generate_teacher_logits.py")
-            self._no_logits_warned = True
+        if self._current_paths and not self._sam_targets:
+            self._kd_unmatched_batches += 1
+            if not self._no_logits_warned:
+                stems = [Path(p).stem for p in self._current_paths[:3]]
+                print(f"[KD] Warning: no SAM logits matched batch stems {stems}. "
+                      f"Run: python scripts/generate_teacher_logits.py")
+                self._no_logits_warned = True
+            # A KD run whose teacher files never match silently degenerates into the baseline
+            if self._kd_unmatched_batches >= 10 and (getattr(self.kd_cfg, "strict", True) if self.kd_cfg is not None else True):
+                raise RuntimeError(
+                    f"[KD] No teacher logits in '{self.logits_dir}' matched {self._kd_unmatched_batches} consecutive "
+                    f"training batches (expected '<stem>_logits.npy'). Refusing to train KD without a teacher."
+                )
+        else:
+            self._kd_unmatched_batches = 0
 
         return batch
 
