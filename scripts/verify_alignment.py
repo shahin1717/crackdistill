@@ -46,6 +46,8 @@ def main():
                         help="Output directory for visual overlay verification.")
     parser.add_argument("--min-median-iou", type=float, default=0.50,
                         help="Minimum acceptable median IoU threshold for warped alignment.")
+    parser.add_argument("--json-out", type=str, default="reports/alignment_verification.json",
+                        help="Where to write the numeric alignment report.")
     args = parser.parse_args()
 
     logits_path = Path(args.logits_dir).resolve()
@@ -63,6 +65,7 @@ def main():
 
     try:
         from ultralytics.data.dataset import YOLODataset
+        from distillation.kd_trainer import letterbox_content_box, warp_to_letterbox
     except ImportError:
         print("ERROR: ultralytics is required. Run in the distill environment.")
         sys.exit(1)
@@ -127,27 +130,15 @@ def main():
         if gt_masks is None or len(gt_masks) == 0:
             continue
 
-        orig_h, orig_w = sample.get("ori_shape", (360, 640))
-        (r_w, r_h), (pad_w, pad_h) = sample.get("ratio_pad", ((0.8, 0.8), (0.0, 112.0)))
+        orig_hw = sample.get("ori_shape", None)
         img_tensor = sample.get("img", None)  # (3, 512, 512)
         imgsz = img_tensor.shape[-2:] if img_tensor is not None else (512, 512)
 
         target_h, target_w = 256, 256
-        scale_y = target_h / float(imgsz[0])
-        scale_x = target_w / float(imgsz[1])
-
-        # Compute letterbox padding in target space
-        t_top = int(round(pad_h * scale_y))
-        t_left = int(round(pad_w * scale_x))
-        t_unpad_h = int(round(float(orig_h) * r_h * scale_y))
-        t_unpad_w = int(round(float(orig_w) * r_w * scale_x))
-
-        t_top = max(0, min(t_top, target_h - 1))
-        t_left = max(0, min(t_left, target_w - 1))
-        t_unpad_h = max(1, min(t_unpad_h, target_h - t_top))
-        t_unpad_w = max(1, min(t_unpad_w, target_w - t_left))
-        t_bottom = max(0, target_h - t_top - t_unpad_h)
-        t_right = max(0, target_w - t_left - t_unpad_w)
+        # Production geometry (distillation.kd_trainer) — no re-implementation here
+        box = letterbox_content_box(orig_hw, sample.get("ratio_pad", None), imgsz, (target_h, target_w))
+        if box is None:
+            continue
 
         num_gt = gt_masks.shape[0]
         num_sam = sam_logits.shape[0]
@@ -175,8 +166,7 @@ def main():
                 u_iou = compute_mask_iou(sam_bin_u, gt_bin)
 
                 # 2. Warped
-                sam_unpad = F.interpolate(sam_inst, size=(t_unpad_h, t_unpad_w), mode="bilinear", align_corners=False)
-                sam_warped = F.pad(sam_unpad, (t_left, t_right, t_top, t_bottom), mode="constant", value=-20.0).squeeze()
+                sam_warped = warp_to_letterbox(sam_inst, box, (target_h, target_w), pad_value=-20.0).squeeze()
                 sam_bin_w = (torch.sigmoid(sam_warped) > 0.35).float()
                 w_iou = compute_mask_iou(sam_bin_w, gt_bin)
 
@@ -267,6 +257,48 @@ def main():
 
     # Acceptance Assertion
     median_warped = float(np.median(warped_arr))
+
+    def _summary(arr):
+        return {
+            "mean": float(arr.mean()),
+            "median": float(np.median(arr)),
+            "p05": float(np.percentile(arr, 5)),
+            "frac_below_0.50": float((arr < 0.50).mean()),
+            "frac_below_0.75": float((arr < 0.75).mean()),
+            "frac_below_0.90": float((arr < 0.90).mean()),
+        }
+
+    import json
+    import subprocess
+    import ultralytics
+    try:
+        commit = subprocess.run(["git", "rev-parse", "HEAD"], cwd=ROOT, capture_output=True, text=True).stdout.strip()
+        dirty = bool(subprocess.run(["git", "status", "--porcelain", "--", "distillation", "scripts"],
+                                    cwd=ROOT, capture_output=True, text=True).stdout.strip())
+    except Exception:
+        commit, dirty = None, None
+    report = {
+        "git_commit": commit,
+        "git_dirty_code": dirty,
+        "ultralytics_version": ultralytics.__version__,
+        "dataset_yaml": str(ds_yaml_path.relative_to(ROOT) if ds_yaml_path.is_relative_to(ROOT) else ds_yaml_path),
+        "logits_dir": str(logits_path.relative_to(ROOT) if logits_path.is_relative_to(ROOT) else logits_path),
+        "imgsz": 512,
+        "kd_grid": [256, 256],
+        "binarize_threshold": 0.35,
+        "n_samples": valid_samples,
+        "n_instances": int(len(warped_arr)),
+        "unwarped": _summary(unwarped_arr),
+        "warped": _summary(warped_arr),
+        "min_median_iou": args.min_median_iou,
+        "passed": median_warped >= args.min_median_iou,
+    }
+    json_path = Path(args.json_out)
+    json_path = json_path if json_path.is_absolute() else ROOT / json_path
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(f"✓ Saved numeric alignment report to: {json_path}")
+
     if median_warped >= args.min_median_iou:
         print(f"\n✅ PASS: Median Warped IoU ({median_warped:.4f}) meets acceptance threshold (>= {args.min_median_iou})!")
         return 0

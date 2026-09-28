@@ -2,7 +2,7 @@
 
 **Project:** CrackDistill (SAM 2 Large $\to$ YOLOv11n-seg Knowledge Distillation)  
 **Date:** August 21, 2026  
-**Status:** ✅ Production Architecture Validated | 🏆 All-Time SOTA Mosaic Verified | ⚡ Edge Deployment Verified (107.8 FPS Single-Tile / 15.4 FPS Full-Scene)  
+**Status:** ✅ Production Architecture Validated | 🏆 All-Time SOTA Mosaic Verified | ⚡ 107.8 FPS Single-Tile (Tesla T4); full-scene latency not yet measured  
 
 ---
 
@@ -41,4 +41,4 @@
 4. **Edge Deployment Target Exceeded**:
    * Tesla T4 inference benchmark:
      * **Level 1 (Single 512×512 Tile):** **107.8 FPS (9.27 ms latency)**, 2.84M parameters, 6.2 MB checkpoint, 0 ms teacher overhead.
-     * **Level 2 (Full-Scene 2000×1500 Reconstruction, 20 tiles):** **15.4 scenes/sec (64.9 ms)** batched / **5.4 scenes/sec (185.2 ms)** serial.
+     * **Level 2 (Full-Scene 2000×1500 Reconstruction, 20 tiles):** not yet measured end-to-end; ≈185 ms (≈5.4 scenes/sec) serial is an estimate (20 × single-tile latency). No batched path is implemented.

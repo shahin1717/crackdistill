@@ -244,10 +244,6 @@ def benchmark_tiled_inference_pipeline(
             "mean_ms": scene_ms,
             "fps": scene_fps,
         },
-        "pipeline_batched": {
-            "mean_ms": scene_ms * 0.35,
-            "fps": scene_fps / 0.35 if scene_ms > 0 else 0.0,
-        },
         "critical_disambiguation_note": (
             f"Level 1: Single-Tile forward pass = {tile_ms:.2f} ms ({tile_fps:.1f} FPS). "
             f"Level 2: Full-Scene ({w}x{h}, {n_tiles} tiles) reconstruction = {scene_ms:.1f} ms ({scene_fps:.1f} scenes/sec)."

@@ -141,7 +141,7 @@ class TestP23CanonicalTestSet(unittest.TestCase):
 
 
 class TestP25TiledInferencePipeline(unittest.TestCase):
-    """Test suite for P2-5 serial vs batched tiling benchmark and disambiguation."""
+    """Test suite for P2-5 single-tile vs full-scene tiling benchmark and disambiguation."""
 
     class MockYOLO:
         """Mock YOLO model returning empty segmentation result."""
@@ -172,14 +172,13 @@ class TestP25TiledInferencePipeline(unittest.TestCase):
         )
         self.assertIn("level1_single_tile", res)
         self.assertIn("pipeline_serial", res)
-        self.assertIn("pipeline_batched", res)
+        # Audit F1: no batched figure unless batching is actually implemented and timed
+        self.assertNotIn("pipeline_batched", res)
         self.assertIn("num_tiles", res)
         self.assertIn("critical_disambiguation_note", res)
 
         # Pipeline serial latency must be strictly greater than single-tile latency
         self.assertGreater(res["pipeline_serial"]["mean_ms"], res["level1_single_tile"]["mean_ms"])
-        # Serial latency must be >= batched latency
-        self.assertGreaterEqual(res["pipeline_serial"]["mean_ms"], res["pipeline_batched"]["mean_ms"])
 
 
 class TestP21ConfirmatoryExperiments(unittest.TestCase):

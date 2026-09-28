@@ -79,7 +79,7 @@ To anchor all subsequent engineering moves, here is our locked empirical baselin
 │ 09_combined (Affinity + Dilated)      │     0.5409     │    0.5881     │      0.0851       │     0.0200     │   0.2630   │
 │ 03_mosaic_native (Mosaic + SAM 2)     │     0.5440     │    0.5770     │    0.1409 🏆      │   0.0373 🏆    │   0.2515   │
 └──────────────────────────────────────────────────────────────────────────────────────────────────────────────────┘
-* Edge Deployment: 107.8 FPS (9.27 ms) single-tile / 15.4 scenes/s (64.9 ms) full-scene 2000x1500 reconstruction on Tesla T4; 2.84M parameters, 6.2 MB checkpoint, 0 ms teacher overhead.
+* Edge Deployment: 107.8 FPS (9.27 ms) single-tile on Tesla T4 (full-scene 2000x1500 latency not yet measured); 2.84M parameters, 6.2 MB checkpoint, 0 ms teacher overhead.
 ```
 
 ### Key Takeaways from the Current State:

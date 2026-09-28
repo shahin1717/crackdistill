@@ -16,6 +16,72 @@ from collections import OrderedDict
 from ultralytics.models.yolo.segment.train import SegmentationTrainer
 
 
+def letterbox_content_box(orig_hw, ratio_pad, imgsz, target_hw):
+    """
+    Locate the real image content of a YOLO letterbox canvas inside a (target_h, target_w) grid.
+
+    Single source of truth for teacher -> student coordinate warping (P0-1), shared by the
+    mask/feature KD losses, scripts/verify_alignment.py and tests/test_coordinate_warping.py.
+
+    Args:
+        orig_hw: (h, w) of the source image the SAM teacher saw, or None if unknown.
+        ratio_pad: Ultralytics batch ratio_pad, ((h_ratio, w_ratio), (left, top)), or None.
+            In training (rect=False, scaleup=False) the LetterBox gain is 1, so ratio_pad[0]
+            is the full source -> canvas scale.
+        imgsz: (H, W) of the letterbox canvas.
+        target_hw: (h, w) of the grid the loss is computed on.
+
+    Returns:
+        (top, left, unpad_h, unpad_w) in target pixels, or None when orig_hw is unknown.
+    """
+    if orig_hw is None:
+        return None
+    orig_h, orig_w = float(orig_hw[0]), float(orig_hw[1])
+    target_h, target_w = int(target_hw[0]), int(target_hw[1])
+
+    if ratio_pad is not None:
+        r_info, pad_info = ratio_pad
+        if isinstance(r_info, (tuple, list)):
+            r_h, r_w = float(r_info[0]), float(r_info[1])
+        else:
+            r_h = r_w = float(r_info)
+        if isinstance(pad_info, (tuple, list)):
+            pad_w, pad_h = float(pad_info[0]), float(pad_info[1])
+        else:
+            pad_w = pad_h = float(pad_info)
+    else:
+        # Reconstruct what LetterBox would have produced
+        r = min(float(imgsz[0]) / orig_h, float(imgsz[1]) / orig_w)
+        r_h = r_w = r
+        pad_w = (float(imgsz[1]) - round(orig_w * r)) / 2.0
+        pad_h = (float(imgsz[0]) - round(orig_h * r)) / 2.0
+
+    scale_y = target_h / float(imgsz[0])
+    scale_x = target_w / float(imgsz[1])
+    top = max(0, min(int(round(pad_h * scale_y)), target_h - 1))
+    left = max(0, min(int(round(pad_w * scale_x)), target_w - 1))
+    unpad_h = max(1, min(int(round(orig_h * r_h * scale_y)), target_h - top))
+    unpad_w = max(1, min(int(round(orig_w * r_w * scale_x)), target_w - left))
+    return top, left, unpad_h, unpad_w
+
+
+def warp_to_letterbox(tensor, box, target_hw, pad_value):
+    """
+    Resize a source-space (N, C, h, w) tensor onto the content box and pad the letterbox border.
+
+    Args:
+        tensor: (N, C, h, w) teacher logits or features spanning the full source image.
+        box: (top, left, unpad_h, unpad_w) from letterbox_content_box().
+        target_hw: (h, w) of the output grid.
+        pad_value: fill value for the letterbox border (e.g. -20.0 background logit).
+    """
+    top, left, unpad_h, unpad_w = box
+    bottom = max(0, int(target_hw[0]) - top - unpad_h)
+    right = max(0, int(target_hw[1]) - left - unpad_w)
+    unpad = F.interpolate(tensor, size=(unpad_h, unpad_w), mode="bilinear", align_corners=False)
+    return F.pad(unpad, (left, right, top, bottom), mode="constant", value=pad_value)
+
+
 class KDYOLODataset(torch.utils.data.Dataset):
     """
     Wrapper for YOLO Dataset that preloads SAM teacher logits and features
@@ -316,6 +382,7 @@ class KDSegmentationTrainer(SegmentationTrainer):
         self._dropped_instances_count = 0
         self._total_instances_count = 0
         self._no_logits_warned = False
+        self._geom_fallback_warned = False
         self._sam_targets = {}   # image_stem → soft target tensor (M, 256, 256)
         self._sam_features = {}  # image_stem → dict of features
         self._hook_handles = []
@@ -385,6 +452,26 @@ class KDSegmentationTrainer(SegmentationTrainer):
             "dropped_instances": dropped,
             "drop_rate": rate,
         }
+
+    def _letterbox_box(self, orig_hw, ratio_pad, imgsz, target_hw, stem):
+        """
+        letterbox_content_box() with a loud failure when the batch lacks ori_shape.
+
+        Without it the teacher can only be plain-resized over the padded canvas, which is the
+        pre-P0-1 misalignment. Strict mode (default) raises; permissive mode warns once.
+        """
+        box = letterbox_content_box(orig_hw, ratio_pad, imgsz, target_hw)
+        if box is None:
+            msg = (
+                f"Missing letterbox metadata (ori_shape) for '{stem}': the teacher cannot be aligned to the "
+                f"letterboxed student canvas, and a plain resize would reintroduce the P0-1 padding offset."
+            )
+            if getattr(self.kd_cfg, "strict", True) if self.kd_cfg is not None else True:
+                raise RuntimeError(msg)
+            if not self._geom_fallback_warned:
+                print(f"[KD Warning] {msg} Falling back to plain resize (strict=False).")
+                self._geom_fallback_warned = True
+        return box
 
     def setup_model(self):
         """Build model, set up projection layers and hooks, and call parent setup."""
@@ -794,59 +881,18 @@ class KDSegmentationTrainer(SegmentationTrainer):
                         align_corners=False
                     ).squeeze(1)
 
-                    # Extract letterbox parameters for image i
-                    orig_h, orig_w = None, None
-                    if ori_shape_list is not None and i < len(ori_shape_list):
-                        orig_h, orig_w = ori_shape_list[i]
-                    
-                    pad_w, pad_h, r_w, r_h = 0.0, 0.0, 1.0, 1.0
-                    if ratio_pad_list is not None and i < len(ratio_pad_list):
-                        r_info, pad_info = ratio_pad_list[i]
-                        if isinstance(r_info, (tuple, list)):
-                            r_w, r_h = float(r_info[0]), float(r_info[1])
-                        else:
-                            r_w, r_h = float(r_info), float(r_info)
-                        if isinstance(pad_info, (tuple, list)):
-                            pad_w, pad_h = float(pad_info[0]), float(pad_info[1])
-                        else:
-                            pad_w, pad_h = float(pad_info), float(pad_info)
-                    elif orig_h is not None and orig_w is not None:
-                        r = min(float(imgsz[0]) / float(orig_h), float(imgsz[1]) / float(orig_w))
-                        r_w, r_h = r, r
-                        pad_w = (float(imgsz[1]) - round(float(orig_w) * r)) / 2.0
-                        pad_h = (float(imgsz[0]) - round(float(orig_h) * r)) / 2.0
-
                     # Scientific Fix (P0-1): Exact Letterbox Coordinate Warping
                     # SAM teacher logits span [0, orig_h] x [0, orig_w].
                     # Student proto spans letterboxed imgsz canvas with padding.
                     # Project teacher logits into student canvas with exact padding alignment.
-                    if orig_h is not None and orig_w is not None:
-                        scale_y = target_h / float(imgsz[0])
-                        scale_x = target_w / float(imgsz[1])
-                        t_top = int(round(pad_h * scale_y))
-                        t_left = int(round(pad_w * scale_x))
-                        t_unpad_h = int(round(float(orig_h) * r_h * scale_y))
-                        t_unpad_w = int(round(float(orig_w) * r_w * scale_x))
-                        
-                        t_top = max(0, min(t_top, target_h - 1))
-                        t_left = max(0, min(t_left, target_w - 1))
-                        t_unpad_h = max(1, min(t_unpad_h, target_h - t_top))
-                        t_unpad_w = max(1, min(t_unpad_w, target_w - t_left))
-                        t_bottom = max(0, target_h - t_top - t_unpad_h)
-                        t_right = max(0, target_w - t_left - t_unpad_w)
-
-                        sam_unpad = F.interpolate(
-                            sam_logits_matched.unsqueeze(1),
-                            size=(t_unpad_h, t_unpad_w),
-                            mode="bilinear",
-                            align_corners=False
-                        )
+                    orig_hw = ori_shape_list[i] if ori_shape_list is not None and i < len(ori_shape_list) else None
+                    ratio_pad_i = ratio_pad_list[i] if ratio_pad_list is not None and i < len(ratio_pad_list) else None
+                    box = self._letterbox_box(orig_hw, ratio_pad_i, imgsz, (target_h, target_w), stem)
+                    if box is not None:
+                        t_top, t_left, t_unpad_h, t_unpad_w = box
                         # Pad canvas with -20.0 (background logit, sigmoid(-20/T) ~ 0)
-                        sam_logits_matched_resized = F.pad(
-                            sam_unpad,
-                            (t_left, t_right, t_top, t_bottom),
-                            mode="constant",
-                            value=-20.0
+                        sam_logits_matched_resized = warp_to_letterbox(
+                            sam_logits_matched.unsqueeze(1), box, (target_h, target_w), pad_value=-20.0
                         ).squeeze(1)
 
                         valid_content_mask = torch.zeros(
@@ -1024,26 +1070,12 @@ class KDSegmentationTrainer(SegmentationTrainer):
                                 if tf_item.ndim == 3:
                                     tf_item = tf_item.unsqueeze(0)
                                 
-                                # Letterbox warping for teacher features if padding is present
-                                if ori_shape_list is not None and b_idx < len(ori_shape_list) and ratio_pad_list is not None and b_idx < len(ratio_pad_list):
-                                    f_orig_h, f_orig_w = ori_shape_list[b_idx]
-                                    f_r_info, f_pad_info = ratio_pad_list[b_idx]
-                                    f_rw = float(f_r_info[0]) if isinstance(f_r_info, (tuple, list)) else float(f_r_info)
-                                    f_rh = float(f_r_info[1]) if isinstance(f_r_info, (tuple, list)) else float(f_r_info)
-                                    f_pw = float(f_pad_info[0]) if isinstance(f_pad_info, (tuple, list)) else float(f_pad_info)
-                                    f_ph = float(f_pad_info[1]) if isinstance(f_pad_info, (tuple, list)) else float(f_pad_info)
-                                    
-                                    f_sc_y = target_h / float(imgsz[0])
-                                    f_sc_x = target_w / float(imgsz[1])
-                                    f_top = max(0, min(int(round(f_ph * f_sc_y)), target_h - 1))
-                                    f_left = max(0, min(int(round(f_pw * f_sc_x)), target_w - 1))
-                                    f_unpad_h = max(1, min(int(round(float(f_orig_h) * f_rh * f_sc_y)), target_h - f_top))
-                                    f_unpad_w = max(1, min(int(round(float(f_orig_w) * f_rw * f_sc_x)), target_w - f_left))
-                                    f_bottom = max(0, target_h - f_top - f_unpad_h)
-                                    f_right = max(0, target_w - f_left - f_unpad_w)
-                                    
-                                    tf_unpad = F.interpolate(tf_item, size=(f_unpad_h, f_unpad_w), mode="bilinear", align_corners=False)
-                                    tf_item = F.pad(tf_unpad, (f_left, f_right, f_top, f_bottom), mode="constant", value=0.0)
+                                # Letterbox warping for teacher features (shared P0-1 geometry)
+                                f_orig_hw = ori_shape_list[b_idx] if ori_shape_list is not None and b_idx < len(ori_shape_list) else None
+                                f_ratio_pad = ratio_pad_list[b_idx] if ratio_pad_list is not None and b_idx < len(ratio_pad_list) else None
+                                f_box = self._letterbox_box(f_orig_hw, f_ratio_pad, imgsz, (target_h, target_w), stem)
+                                if f_box is not None:
+                                    tf_item = warp_to_letterbox(tf_item, f_box, (target_h, target_w), pad_value=0.0)
                                 elif tf_item.shape[2:] != (target_h, target_w):
                                     tf_item = F.interpolate(tf_item, size=(target_h, target_w), mode="bilinear", align_corners=False)
                                 

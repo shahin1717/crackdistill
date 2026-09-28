@@ -529,13 +529,16 @@ This notebook benchmarks the deployed **YOLOv11n-seg** model across two architec
   * Confirms 0% runtime overhead over vanilla YOLOv11n-seg
 
 * **Level 2: Full-Scene Tiled Reconstruction (2000×1500, 20 overlapping tiles)**
-  * Full end-to-end reconstruction: tile slicing, serial / batched inference, Gaussian blending, and thresholding
-  * Serial latency (Edge/Jetson profile: ~5.4 scenes/sec)
-  * Batched latency (Server GPU profile: ~15.4 scenes/sec)
+  * Full end-to-end reconstruction: tile slicing, serial per-tile inference, Gaussian blending, and thresholding
+  * Measured end-to-end on this notebook's device (no batched path is implemented, so none is reported)
 
 > **CRITICAL ARCHITECTURAL DISAMBIGUATION (P2-5):**
-> 107.8 FPS (9.27 ms) refers strictly to **Single-Tile (512×512)** forward inference.
-> Full-Scene 2000×1500 pavement inspection requires 20 overlapping tiles, yielding **5.4 scenes/sec** (serial) or **15.4 scenes/sec** (batched)."""),
+> 107.8 FPS (9.27 ms, Tesla T4) refers strictly to **Single-Tile (512×512)** forward inference.
+> Full-Scene 2000×1500 pavement inspection requires 20 overlapping tiles; its throughput is whatever Level 2 measures below."""),
+
+        make_cell('code', "!mkdir -p inference"),
+        make_cell('code', "%%writefile inference/__init__.py\n# inference package\nfrom inference.tiled_inference import tiled_predict_image_gaussian, create_gaussian_weight_map\n"),
+        make_cell('code', f"%%writefile inference/tiled_inference.py\n{tiled_inference_code}"),
 
         make_cell('code', """!pip install -q ultralytics thop
 import time, torch
@@ -579,29 +582,19 @@ tile_fps = 1000.0 / tile_mean_ms
 # LEVEL 2: Full-Scene Tiled Reconstruction Benchmark (2000x1500, 20 tiles)
 # =====================================================================
 print("Running Level 2: Full-Scene Tiled Reconstruction Benchmark...")
-num_tiles = 20
-try:
-    from inference.tiled_inference import benchmark_tiled_inference_pipeline
-    pipeline_res = benchmark_tiled_inference_pipeline(
-        model=model,
-        image_shape=(1500, 2000, 3),
-        tile_size=512,
-        overlap=0.2,
-        num_runs=20,
-        device=device
-    )
-    serial_ms = pipeline_res["pipeline_serial"]["mean_ms"]
-    serial_fps = pipeline_res["pipeline_serial"]["fps"]
-    batched_ms = pipeline_res["pipeline_batched"]["mean_ms"]
-    batched_fps = pipeline_res["pipeline_batched"]["fps"]
-    num_tiles = pipeline_res["num_tiles"]
-except Exception as e:
-    # Deterministic fallback based on tile measurements + blending overhead
-    tile_blend_overhead_ms = 0.5
-    serial_ms = (tile_mean_ms + tile_blend_overhead_ms) * num_tiles
-    serial_fps = 1000.0 / serial_ms
-    batched_ms = (tile_mean_ms * 0.3 + tile_blend_overhead_ms) * num_tiles
-    batched_fps = 1000.0 / batched_ms
+# Measured end-to-end; no estimated fallback, so a failure here is visible instead of printing made-up numbers
+from inference.tiled_inference import benchmark_tiled_inference_pipeline
+pipeline_res = benchmark_tiled_inference_pipeline(
+    model=model,
+    image_shape=(1500, 2000, 3),
+    tile_size=512,
+    overlap=0.2,
+    num_runs=20,
+    device=device
+)
+serial_ms = pipeline_res["pipeline_serial"]["mean_ms"]
+serial_fps = pipeline_res["pipeline_serial"]["fps"]
+num_tiles = pipeline_res["num_tiles"]
 
 print("=" * 68)
 print("📊 TWO-LEVEL BENCHMARK RESULTS SUMMARY:")
@@ -614,13 +607,12 @@ print(f"      p50 / p95    : {tile_p50_ms:.2f} ms / {tile_p95_ms:.2f} ms")
 print(f"      Throughput   : {tile_fps:.1f} FPS")
 print("-" * 68)
 print(f"   LEVEL 2: FULL-SCENE (2000x1500, {num_tiles} TILES) RECONSTRUCTION:")
-print(f"      Serial Pipeline  : {serial_ms:.1f} ms ({serial_fps:.1f} scenes/sec) [Edge/Jetson profile]")
-print(f"      Batched Pipeline : {batched_ms:.1f} ms ({batched_fps:.1f} scenes/sec) [Server GPU profile]")
+print(f"      Serial Pipeline  : {serial_ms:.1f} ms ({serial_fps:.1f} scenes/sec) [measured on {device}]")
 print("=" * 68)
 print("   CRITICAL ARCHITECTURAL DISAMBIGUATION NOTE (P2-5):")
-print("   - 107.8 FPS (9.27 ms) measures single 512x512 tile forward pass.")
+print(f"   - Level 1 measures a single 512x512 tile forward pass ({tile_fps:.1f} FPS here).")
 print(f"   - Full-scene 2000x1500 pavement inspection requires {num_tiles} tiles,")
-print(f"     yielding {serial_fps:.1f} scenes/sec (serial) or {batched_fps:.1f} scenes/sec (batched).")
+print(f"     yielding {serial_fps:.1f} scenes/sec (serial, measured end-to-end).")
 print("=" * 68)
 """)
     ]
@@ -1003,7 +995,7 @@ This folder contains the complete, self-contained suite of Kaggle notebooks cove
 | **`05_run_multiscale_mask_kd.ipynb`** | **Research Variant 3 (512x512 High-Res Matching)**: Full $512 \\\\times 512$ sub-pixel logit alignment. | ~2.5–3.0 hrs | `results/exp_multiscale_512_mask_kd_T3.7769_W0.9612_seed42_150ep.json` |
 | **`06_run_multiscale_layer_kd.ipynb`** | **Research Variant 4 (Multi-Scale Neck LayerKD)**: Intermediate Channel-Wise Distillation (CWD) on PANet Neck layers (16, 19, 22). | ~2.8–3.2 hrs | `results/exp_multiscale_layer_cwd_kd_T3.7769_W0.9612_seed42_150ep.json` |
 | **`07_eval_ood_and_tiled_inference.ipynb`** | **OOD & Tiled Inference Engine**: Evaluates checkpoints on uncropped images with direct resizing vs Gaussian-weighted tiled sliding window ($512 \\\\times 512$ native patches). | ~5–10 mins | `results/ood_eval_summary.json` |
-| **`08_benchmark_speed_and_profile.ipynb`** | **Two-Level Speed Benchmark**: Benchmarks Single-Tile (107.8 FPS / 9.27 ms) and Full-Scene Tiled Reconstruction (5.4–15.4 scenes/sec). | ~2 mins | Latency & FPS Report |
+| **`08_benchmark_speed_and_profile.ipynb`** | **Two-Level Speed Benchmark**: Benchmarks Single-Tile (107.8 FPS / 9.27 ms) and Full-Scene Tiled Reconstruction (serial, measured end-to-end). | ~2 mins | Latency & FPS Report |
 | **`09_run_combined_affinity_dilated_kd.ipynb`** | **Research Variant 5 (Combined Affinity + Dilated)**: Multi-loss combination. | ~2.8–3.2 hrs | `results/exp_combined_affinity_dilated_kd_T3.7769_W0.9612_seed42_150ep.json` |
 | **`09_run_focal_mask_kd.ipynb`** | **Research Variant 6 (Focal Mask-KL)**: Soft focal modulation ($\\\\gamma=2.0$). | ~2.5–3.0 hrs | `results/exp_focal_mask_kd_gamma2.0_T3.7769_W0.9612_seed42_150ep.json` |
 | **`10_run_layerkd_dilated_hires.ipynb`** | **Ultimate OOD Candidate (768px LayerKD + Dilated)**: Multi-scale Neck CWD + Foreground Dilated Mask-KL at $768 \\\\times 768$. | ~3.0–3.5 hrs | `results/exp_hires_layerkd_dilated_768_T3.7769_W0.9612.json` |

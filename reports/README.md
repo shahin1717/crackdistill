@@ -9,7 +9,7 @@ This directory is the central repository for all academic reports, LaTeX papers,
 ### 1. 📜 LaTeX Master Paper & Publication Drafts
 * **[crackdistill_master_report.tex](file:///home/shahin/distill/reports/crackdistill_master_report.tex)** (also mirrored as **[crackdistill_paper.tex](file:///home/shahin/distill/reports/crackdistill_paper.tex)**):
   * **The definitive master LaTeX report** detailing the full project arc from Day 0 through the final verified breakthroughs.
-  * *Covers:* Mathematical loss formulations (Bernoulli KL, CWD, Asymmetric Tversky, Prototype Upsampling), Connected Components conversion, Optuna search ($\tau=3.7769, W=0.9612$), PANet Neck CWD, 250-mosaic native teacher extraction, 2D Gaussian apodization TTA engine, all-time record leaderboards, Tesla T4 edge deployment (107.8 FPS single-tile / 15.4 FPS full-scene), and future research roadmap.
+  * *Covers:* Mathematical loss formulations (Bernoulli KL, CWD, Asymmetric Tversky, Prototype Upsampling), Connected Components conversion, Optuna search ($\tau=3.7769, W=0.9612$), PANet Neck CWD, 250-mosaic native teacher extraction, 2D Gaussian apodization TTA engine, all-time record leaderboards, Tesla T4 edge deployment (107.8 FPS single-tile; full-scene latency not yet measured), and future research roadmap.
 * **[crackdistill_paper_v1.tex](file:///home/shahin/distill/reports/crackdistill_paper_v1.tex)**: Initial LaTeX paper draft from August 2026.
 * **[crackdistill_paper_v1.pdf](file:///home/shahin/distill/reports/crackdistill_paper_v1.pdf)** (and **[crackdistill_paper.pdf](file:///home/shahin/distill/reports/crackdistill_paper.pdf)**): Compiled PDF of the paper draft.
 

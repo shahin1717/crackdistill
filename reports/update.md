@@ -4,7 +4,7 @@
 **Author:** Shahin  
 **Target Audience:** Supervisor / Research Committee  
 **Date:** August 21, 2026  
-**Status:** ✅ Production Architecture Validated | 🏆 SOTA Mosaic Breakthrough Verified | ⚡ Edge Deployment Verified (107.8 FPS Single-Tile / 15.4 FPS Full-Scene)  
+**Status:** ✅ Production Architecture Validated | 🏆 SOTA Mosaic Breakthrough Verified | ⚡ 107.8 FPS Single-Tile (Tesla T4); full-scene latency not yet measured  
 
 ---
 
@@ -18,7 +18,7 @@
   * **Mask mAP50-95:** **`0.0373`** (+48.0% relative improvement over prior best `0.0252`, +90.3% over baseline).
   * **Box mAP50:** **`0.1747`** (+100.3% relative improvement, more than 2× baseline).
   * **Full-Res Tiled Dice:** **`0.2515`** (+52.3% resolution recovery boost over direct resize).
-* **Edge Inference Proof:** Runs at **107.8 FPS (9.27 ms latency)** for single 512×512 tiles and **15.4 scenes/sec (64.9 ms)** for full-scene 2000×1500 reconstruction (20 overlapping tiles) on a single Tesla T4 GPU.
+* **Edge Inference Proof:** Runs at **107.8 FPS (9.27 ms latency)** for single 512×512 tiles on a single Tesla T4 GPU. Full-scene 2000×1500 reconstruction (20 overlapping tiles) has not been timed end-to-end; ≈5.4 scenes/sec serial is an estimate (20 × single-tile latency).
 
 ---
 

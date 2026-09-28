@@ -100,7 +100,7 @@ Across eleven distinct experimental campaigns, we address:
 (6)~the \textbf{Native Mosaic Breakthrough}, stitching source photos into wide $1920\times720$ composites supervised by native-scale SAM~2 logits;
 (7)~a test-time inference engine utilizing \textbf{2D Gaussian apodization tile blending} and multi-scale Gaussian TTA ($640+768$), which boosts megapixel Dice from 0.5061 to \textbf{0.7542} ($+49.0\%$);
 and (8)~next-generation loss formulations including \textbf{Resolution-Preserving Mask-KL} achieving all-time record recall (\textbf{0.7945}) and \textbf{Asymmetric Soft Tversky Loss} ($\beta=0.70$) establishing all-time record direct OOD detection (\textbf{0.1459} Mask mAP$_{50}$ / \textbf{0.1820} Box mAP$_{50}$) and precision (\textbf{0.7831}). 
-On edge hardware, the distilled student executes at \textbf{107.8\,FPS (9.27\,ms)} on a Tesla~T4 GPU for single-tile ($512\times512$) inspection and \textbf{15.4\,scenes/s (64.9\,ms)} for full-scene ($2000\times1500$, 20 tiles) reconstruction, establishing a production-ready edge deployment paradigm.
+On edge hardware, the distilled student executes at \textbf{107.8\,FPS (9.27\,ms)} on a Tesla~T4 GPU for single-tile ($512\times512$) inspection; full-scene ($2000\times1500$) reconstruction requires 20 such tiles, and its end-to-end latency has not yet been measured.
 \end{abstract}
 \end{tcolorbox}
 
@@ -204,7 +204,7 @@ Bounding-box prompts provide SAM~2 with the complete spatial domain of the fract
 \subsection{Pre-Sigmoid Logits and Dark Knowledge Extraction}
 Rather than distilling thresholded binary masks, we implemented \texttt{generate\_teacher\_logits.py} to intercept the pre-sigmoid mask decoder logits $\mathbf{Z}^t \in \mathbb{R}^{M \times 256 \times 256}$ of SAM~2 Large. 
 In binary masks, all edge pixels are quantized to 0 or 1, discarding the model's confidence landscape. 
-In contrast, SAM~2 pre-sigmoid logits represent calibrated spatial uncertainty:
+In contrast, SAM~2 pre-sigmoid logits retain graded spatial confidence (their calibration has not been measured):
 \begin{itemize}[leftmargin=1.5em]
   \item Deep crack interior: $z^t \gg +3.0 \implies \sigma(z^t) \approx 1.0$
   \item Clear background asphalt: $z^t \ll -3.0 \implies \sigma(z^t) \approx 0.0$
@@ -534,18 +534,19 @@ Postprocessing / NMS & Poly vectorization \& mask stitching & 1.80\,ms & --- & 1
 \textbf{Single-Tile Subtotal} & Single $512\times512$ Patch & \textbf{9.27\,ms} & \textbf{107.8\,FPS} & \textbf{100.0\%} \\
 \midrule
 \multicolumn{5}{l}{\textbf{Level 2: Full-Scene Tiled Reconstruction ($2000\times1500$, 20 Overlapping Tiles)}} \\
-Serial Pipeline & 20 tiles sequential + 2D Gaussian blend & 185.2\,ms & 5.4\,scenes/s & Edge / Jetson \\
-Batched Pipeline & Batch size 8 GPU + 2D Gaussian blend & \textbf{64.9\,ms} & \textbf{15.4\,scenes/s} & Server / Cloud \\
+Serial Pipeline & 20 tiles sequential + 2D Gaussian blend & $\approx$185\,ms$^\dagger$ & $\approx$5.4\,scenes/s$^\dagger$ & --- \\
 \bottomrule
 \end{tabular}
+
+\vspace{2pt}
+{\footnotesize $^\dagger$Estimated as $20\times$ the measured single-tile latency; not an end-to-end measurement.}
 \end{table}
 
 \noindent\textbf{Edge Invariants and Latency Disambiguation (Defect P2-5):}
 \begin{itemize}[leftmargin=1.5em]
-  \item \textbf{Single-Tile vs Full-Scene Disambiguation:} The 107.8\,FPS (9.27\,ms) benchmark strictly measures single-tile ($512\times512$) forward-pass inference. Full-scene pavement inspection ($2000\times1500$) requires a grid of 20 overlapping tiles ($20\%$ overlap with 2D Gaussian apodization blending). On a single Tesla~T4, serial execution achieves 5.4\,scenes/sec (185.2\,ms), while batched execution achieves 15.4\,scenes/sec (64.9\,ms).
+  \item \textbf{Single-Tile vs Full-Scene Disambiguation:} The 107.8\,FPS (9.27\,ms) benchmark strictly measures single-tile ($512\times512$) forward-pass inference. Full-scene pavement inspection ($2000\times1500$) requires a grid of 20 overlapping tiles ($20\%$ overlap with 2D Gaussian apodization blending). Multiplying the measured single-tile latency by 20 gives an estimated $\approx$185\,ms ($\approx$5.4\,scenes/sec) for serial reconstruction on a Tesla~T4, excluding blending overhead. End-to-end full-scene latency has not yet been measured, and no batched tile path is implemented.
   \item \textbf{Zero Runtime Teacher Footprint:} \sam\ is detached completely after logit generation; zero teacher parameters or FLOPs are invoked at inference.
   \item \textbf{Model Size:} 2.84M parameters, 6.2\,MB checkpoint size, 10.2\,GFLOPs.
-  \item \textbf{Survey Throughput Margin:} At 15.4\,scenes/second, an automated inspection vehicle traveling at 50\,km/h (13.9\,m/s) captures overlapping frames every 0.9\,meters, providing complete real-time pavement coverage with zero dropped frames.
 \end{itemize}
 
 %=============================================================================
@@ -599,7 +600,7 @@ By resolving instance conversion with Connected Components Labeling, extracting 
   \item \textbf{0.7831 TTA Precision} all-time record (\texttt{07\_tversky});
   \item \textbf{0.7945 TTA Recall} all-time record (\texttt{06\_res\_preserving});
   \item \textbf{0.7542 Megapixel Tiled Dice} breakthrough (\texttt{03\_mosaic});
-  \item \textbf{107.8 FPS (9.27\,ms)} single-tile inference throughput on Tesla T4 (and 15.4\,scenes/s for full-scene $2000\times1500$ reconstruction).
+  \item \textbf{107.8 FPS (9.27\,ms)} single-tile inference throughput on Tesla T4.
 \end{itemize}
 These results confirm that foundation segmentation models can serve as highly effective structural teachers for edge-deployable inspection networks, bridging the gap between foundation model intelligence and real-time civil infrastructure maintenance.
 
