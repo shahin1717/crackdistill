@@ -1,0 +1,42 @@
+{
+  "git_commit": "496fccf992509e3a8133e0e81d15d69ef9b935f9",
+  "git_dirty_code": false,
+  "ultralytics_version": "8.4.60",
+  "dataset_yaml": "data/datasets/crack500_yolo/dataset.yaml",
+  "logits_dir": "data/teacher_logits",
+  "imgsz": 512,
+  "pipeline": "ultralytics training transforms (augment=True, SPATIAL_AUG_OFF, overlap_mask=False)",
+  "kd_grid": [
+    256,
+    256
+  ],
+  "binarize_threshold": 0.35,
+  "n_samples": 500,
+  "n_instances": 969,
+  "unwarped": {
+    "mean": 0.06221233511715669,
+    "median": 0.0,
+    "p05": 0.0,
+    "frac_below_0.50": 0.9969040247678018,
+    "frac_below_0.75": 1.0,
+    "frac_below_0.90": 1.0
+  },
+  "warped": {
+    "mean": 0.5645457311017517,
+    "median": 0.6044776074292716,
+    "p05": 0.17141005663709524,
+    "frac_below_0.50": 0.30546955624355004,
+    "frac_below_0.75": 0.8555211558307534,
+    "frac_below_0.90": 0.9948400412796697
+  },
+  "warped_trainer_pairing": {
+    "mean": 0.5632668501145478,
+    "median": 0.6044142604339316,
+    "p05": 0.1698019343169662,
+    "frac_below_0.50": 0.3075335397316821,
+    "frac_below_0.75": 0.8555211558307534,
+    "frac_below_0.90": 0.9948400412796697
+  },
+  "min_median_iou": 0.5,
+  "passed": true
+}
