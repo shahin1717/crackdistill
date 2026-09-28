@@ -100,6 +100,7 @@ def main():
 
     unwarped_ious = []
     warped_ious = []
+    paired_ious = []  # teacher[k] vs GT instance k: the pairing the KD loss actually uses
     valid_samples = 0
     visual_samples = []
 
@@ -163,6 +164,7 @@ def main():
             best_u_iou = -1.0
             best_sam_warped = None
             best_sam_unwarped = None
+            paired_iou = 0.0
 
             for s_idx in range(num_sam):
                 sam_inst = sam_logits[s_idx].unsqueeze(0).unsqueeze(0)
@@ -176,6 +178,8 @@ def main():
                 sam_warped = warp_to_letterbox(sam_inst, box, (target_h, target_w), pad_value=-20.0).squeeze()
                 sam_bin_w = (torch.sigmoid(sam_warped) > 0.35).float()
                 w_iou = compute_mask_iou(sam_bin_w, gt_bin)
+                if s_idx == g_idx:
+                    paired_iou = w_iou
 
                 if w_iou > best_w_iou:
                     best_w_iou = w_iou
@@ -186,6 +190,7 @@ def main():
             if best_w_iou >= 0.0:
                 unwarped_ious.append(best_u_iou)
                 warped_ious.append(best_w_iou)
+                paired_ious.append(paired_iou)
 
                 if len(visual_samples) < 6 and best_w_iou > 0.60:
                     visual_samples.append({
@@ -206,6 +211,7 @@ def main():
 
     unwarped_arr = np.array(unwarped_ious)
     warped_arr = np.array(warped_ious)
+    paired_arr = np.array(paired_ious)
 
     print("\n" + "=" * 70)
     print("📊 ALIGNMENT EVALUATION RESULTS")
@@ -218,6 +224,7 @@ def main():
     print(f"5th Percentile IoU:         {np.percentile(unwarped_arr, 5):.4f}               {np.percentile(warped_arr, 5):.4f}")
     print(f"Fraction with IoU >= 0.70:  {(unwarped_arr >= 0.70).mean()*100:.1f}%                {(warped_arr >= 0.70).mean()*100:.1f}%")
     print(f"Fraction with IoU >= 0.85:  {(unwarped_arr >= 0.85).mean()*100:.1f}%                {(warped_arr >= 0.85).mean()*100:.1f}%")
+    print(f"Median IoU, trainer pairing (teacher[k] vs GT k): {np.median(paired_arr):.4f}")
     print("=" * 70)
 
     # Generate Visual Verification Overlay Grid
@@ -298,6 +305,7 @@ def main():
         "n_instances": int(len(warped_arr)),
         "unwarped": _summary(unwarped_arr),
         "warped": _summary(warped_arr),
+        "warped_trainer_pairing": _summary(paired_arr),
         "min_median_iou": args.min_median_iou,
         "passed": median_warped >= args.min_median_iou,
     }
