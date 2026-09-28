@@ -31,7 +31,7 @@ YOLOv11n-seg --> KDSegmentationTrainer: task loss + Bernoulli mask-KL (T=3.7769,
 
 ## Run
 
-- **Kaggle training:** see [`final_notebooks/README.md`](final_notebooks/README.md).
+- **Kaggle training:** [`final_notebooks/howrun.md`](final_notebooks/howrun.md) — what to attach, download and check for each notebook.
 - **Local** (`conda activate distill`, Ultralytics 8.4.60):
 
 ```bash
