@@ -63,6 +63,49 @@ class TestNotebookSuite(unittest.TestCase):
         self.assertIn("'distillation.progressive.enabled': False", kd)
         self.assertIn('overrides["teacher.logits_dir"] = "data/teacher_logits_box/"', kd)
 
+    def _run_step1(self, notebook, fake_input: Path, cwd: Path):
+        """Execute the notebook's Step 1 cell against a fake /kaggle/input tree."""
+        import json as _json
+        import os
+        cells = _json.load(open(self.final_dir / notebook, encoding="utf-8"))["cells"]
+        src = next("".join(c["source"]) for c in cells if "".join(c["source"]).startswith("# ── Step 1"))
+        src = src.replace('Path("/kaggle/input/distill_datasetforme")', f'Path("{fake_input}/missing")')
+        src = src.replace('Path("/kaggle/input")', f'Path("{fake_input}")')
+        old = os.getcwd()
+        os.chdir(cwd)
+        try:
+            exec(compile(src, notebook, "exec"), {})
+        finally:
+            os.chdir(old)
+
+    def test_step1_links_raw_crack500_not_other_datasets(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "input" / "datasets" / "owner" / "distill-datasetforme"
+            for decoy in ("combined_yolo", "crack500_yolo_augmented", "deepcrack_yolo"):
+                (root / "datasets" / decoy / "images").mkdir(parents=True)
+                (root / "datasets" / decoy / "dataset.yaml").write_text("path: .\n")
+            (root / "datasets" / "crack500" / "traincrop").mkdir(parents=True)
+            (root / "teacher_logits").mkdir(parents=True)
+            work = Path(tmp) / "work"
+            work.mkdir()
+            self._run_step1(f"2_mask_kd_seed{self.seeds['mask_kd'][0]}.ipynb", Path(tmp) / "input", work)
+            self.assertEqual((work / "data/datasets/crack500").resolve(), (root / "datasets" / "crack500").resolve())
+            self.assertFalse((work / "data/datasets/crack500_yolo").exists())
+            self.assertEqual((work / "data/teacher_logits_box").resolve(), (root / "teacher_logits").resolve())
+
+    def test_step1_converted_fallback_only_accepts_crack500_yolo(self):
+        import tempfile
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "input" / "ds"
+            for name in ("combined_yolo", "crack500_yolo"):
+                (root / name / "images").mkdir(parents=True)
+                (root / name / "dataset.yaml").write_text("path: .\n")
+            work = Path(tmp) / "work"
+            work.mkdir()
+            self._run_step1(f"1_baseline_seed{self.seeds['baseline'][0]}.ipynb", Path(tmp) / "input", work)
+            self.assertEqual((work / "data/datasets/crack500_yolo").resolve(), (root / "crack500_yolo").resolve())
+
     def test_gt_soft_never_uses_sam_logits(self):
         text = notebook_text(self.final_dir / f"3_gt_soft_seed{self.seeds['gt_soft'][0]}.ipynb")
         self.assertIn('overrides["teacher.logits_dir"] = "data/teacher_logits_gt_soft/"', text)
