@@ -12,7 +12,7 @@ they render on GitHub, in Obsidian and in VS Code's Markdown preview.*
 | Train on crops or full photos? | Crops, at their **native pixel scale** (×0.8 inside the 512 canvas) | Crack widths: median 15–17 px, 10th percentile 3.4 px — downscaling full photos erases the thin ones |
 | Test on full photos how? | **Same pixel scale as training**: resize ×0.8, 512×512 tiles, 50% overlap, Gaussian blending, val-tuned threshold | Train/test scale must match; tiling is standard (nnU-Net, SAHI) |
 | Augmentation | Every arm: photometric + **D4** (8 flips / 90° rotations); the cached teacher map gets the **same** D4 element | v1 had no spatial augmentation and every arm overfit by epoch 9–17 |
-| Distillation signal | Per-instance Bernoulli mask-KL to SAM 2 box-prompt logits (unchanged loss, T=3.7769, w=0.9612) | Isolates one change (augmentation); loss variants come later only if needed |
+| Distillation signal | Mask-KL to SAM 2 box-prompt logits, two forms: **A2** plain (as v1) and **A5** box-cropped + GT-gated; feature/CWD, boundary, affinity, Tversky dropped | §5.4: the crack is ~1% of the KD canvas and SAM misses 44% of thin-crack pixels; feature KD can't follow augmentation |
 | Baselines | **A1** same D4 policy, no KD (the paired baseline) · **A4** Ultralytics default augmentation (mosaic, scale, flips) — the "normal YOLO" reference | KD must beat a strong baseline, not a crippled one |
 | Primary metric | Pixel F1 at a val-tuned threshold on the test crops; COCO mask mAP50 secondary | Crack benchmarks are semantic; reviewers expect F1 / IoU / clDice |
 
@@ -151,38 +151,64 @@ Ultralytics' real training transforms, the warped + rotated teacher lands on the
 - GT masks at Ultralytics' ¼ resolution keep 97.5% of crack pixels on Crack500 (measured), so the mask
   resolution is not the bottleneck.
 
+### 5.4 Which KD losses to use
+
+Measured on 578 train instances (teacher at T=1, p > 0.5, native crop resolution):
+
+| Quantity | Value |
+| :--- | :--- |
+| Crack pixels as a share of the 512×512 KD canvas | median **0.91%** (its GT box: 3.2%) |
+| SAM recall of GT crack pixels, by local crack width | ≤4 px **0.56** · 4–8 px 0.66 · 8–16 px 0.75 · >16 px 0.83 |
+| SAM crack pixels that are GT background inside the box | median **21%** |
+| Images with cached SAM encoder features (for feature KD) | **320 of 2,196** |
+
+| Loss in `kd_trainer.py` | What it does | Evidence | Follows D4? | Decision |
+| :--- | :--- | :--- | :---: | :--- |
+| **Mask-KL** (plain) | Bernoulli KL to σ(teacher/T) over the whole valid canvas, × T² | v1 seed 0: +0.053 val mAP50 over the no-aug baseline; but ~97% of its pixels are background | yes | **A2** |
+| **Mask-KL, box-cropped + GT-gated** (`box_crop`, `gt_gate`) | Same KL, only inside the crack's GT box (normalized by box area, like YOLO's mask loss) and only where SAM agrees with GT | Targets both measured problems; ACE-style gating ([Park & Heo 2020](https://pmc.ncbi.nlm.nih.gov/articles/PMC7471971/)) | yes | **A5** (new) |
+| Foreground-dilated KL (`focused`) | Weights SAM foreground 1.0, 8-px band 0.5, rest 0.05 | Fixes background dominance but follows SAM's foreground, including its misses | yes | superseded by A5 |
+| Boundary | Soft BCE of the *raw* student vs the *temperature-softened* teacher, weighted where SAM is uncertain | Temperature mismatch teaches blurry crack edges; overlaps the KL; never tested alone | yes | drop |
+| Feature / CWD (neck 16·19·22 ← SAM encoder) | Channel-wise KL after 1×1 projectors | Features cached for only 15% of images; P5 target is pooled P4; ViT→CNN gap; gains at YOLO scale +0.8–2.5 mAP with same-family teachers | **no** — SAM features are not rotation-equivariant | drop |
+| Pixel affinity | MSE of neighbour differences (2 directions) | v1: lowest in-domain; affinity KD gains vanish vs tuned baselines ([Niemann 2023](https://arxiv.org/abs/2309.03659)) | needs rework | drop |
+| Tversky vs teacher | Recall-weighted region loss towards SAM's mask | Pulls towards SAM's misses (recall 0.56 on thin cracks) | yes | drop |
+| Multi-scale 512 / resolution-preserving | Match at a finer grid | The teacher is only 256²; upsampling adds no information | yes | drop |
+
+Rule: one KD term, in the plain and the corrected form; nothing is stacked unless the gate in §6 asks for it.
+
 ## 6. Experiment plan
 
 ```mermaid
 flowchart TB
-    A["Stage A — seed 0, 4 runs, ~10 T4-h<br/>A1 baseline+D4 · A2 Mask-KD+D4 · A3 GT-soft+D4 · A4 baseline+Ultralytics aug"]
-    A --> G{"val (crops): A2 vs A1 and A4"}
-    G -->|"A2 > A1 and A2 ≥ A4"| C["Stage C — confirm<br/>A1, A2, A3 × seeds 1–4 (+A4 × 1–4)<br/>~35–40 T4-h"]
-    G -->|"A2 > A1 but A4 > A2"| B["Stage B — close the gap (pick 1–2, seed 0)<br/>• GT-gated KD: distil only where SAM agrees with GT<br/>• teacher TTA: average SAM over 8 D4 views<br/>• teacher follows scale/translate too"]
-    G -->|"A2 ≤ A1"| N["KD does not help once augmentation is on.<br/>Report v1 + A-stage honestly as a negative result;<br/>add a data-efficiency curve (25/50/100% data)"]
+    A["Stage A — seed 0, 5 runs, ~12 T4-h<br/>A1 baseline+D4 · A2 Mask-KD+D4 · A3 GT-soft+D4<br/>A4 baseline+Ultralytics aug · A5 gated Mask-KD+D4"]
+    A --> G{"val (crops): best of A2/A5 = KD*<br/>vs A1 and A4"}
+    G -->|"KD* > A1 and KD* ≥ A4"| C["Stage C — confirm<br/>A1, KD*, A3 × seeds 1–4 (+A4 × 1–4)<br/>~35–40 T4-h"]
+    G -->|"KD* > A1 but A4 > KD*"| B["Stage B — close the gap (pick 1–2, seed 0)<br/>• teacher TTA: average SAM over 8 D4 views<br/>• teacher follows scale/translate too<br/>• T ∈ {1, 2} for the gated loss"]
+    G -->|"KD* ≤ A1"| N["KD does not help once augmentation is on.<br/>Report v1 + A-stage honestly as a negative result;<br/>add a data-efficiency curve (25/50/100% data)"]
     B --> G
     C --> D["Stage D — local, inference only<br/>test crops · 200 full photos · zero-shot OOD · speed<br/>seed-paired stats, bootstrap over parent photos"]
 ```
 
 | Stage | Runs | T4-hours | Output |
 | :--- | :--- | :---: | :--- |
-| A | `A1`–`A4`, seed 0 (generated in `final_notebooks/`) | ~10 | which arm wins on val |
+| A | `A1`–`A5`, seed 0 (generated in `final_notebooks/`) | ~12 | which arm wins on val, and which KD loss |
 | B (only if needed) | 1–2 loss/teacher variants, seed 0 | ~5 | a KD variant that beats A4 |
 | C | winners × seeds 1–4 | ~35–40 | means, CIs, paired tests |
 | D | none (local inference) | — | final tables |
 
 **Statistics (Stage C/D):** same seeds in every arm, paired differences with 95% CIs, bootstrap over the 148
-parent photos (crops are not independent), Holm correction over A2 vs A1 and A2 vs A3, and the minimum
+parent photos (crops are not independent), Holm correction over KD\* vs A1 and KD\* vs A3, and the minimum
 detectable effect. 5 seeds detect ~0.01 if the seed SD is ≤ 0.004.
 
 ## 7. What "better than baseline" will be allowed to mean
 
+KD\* = the better of A2 / A5 on val, fixed before Stage C.
+
 | Result | Claim |
 | :--- | :--- |
-| A2 > A1, A2 > A3, A2 ≥ A4 (CIs exclude 0) | Distilling SAM 2 improves a strongly augmented YOLOv11n-seg, beyond label softening |
-| A2 > A1, A2 ≈ A3 | The gain is soft-label regularization; SAM is not needed for it |
-| A2 > A1 but A4 > A2 | KD helps only where geometric augmentation can't be used — a narrower, still honest claim |
-| A2 ≤ A1 | No KD benefit under augmentation; v1's gain was a substitute for augmentation |
+| KD\* > A1, KD\* > A3, KD\* ≥ A4 (CIs exclude 0) | Distilling SAM 2 improves a strongly augmented YOLOv11n-seg, beyond label softening |
+| KD\* > A1, KD\* ≈ A3 | The gain is soft-label regularization; SAM is not needed for it |
+| KD\* > A1 but A4 > KD\* | KD helps only where geometric augmentation can't be used — a narrower, still honest claim |
+| KD\* ≤ A1 | No KD benefit under augmentation; v1's gain was a substitute for augmentation |
 
 ## 8. Status
 
@@ -190,10 +216,11 @@ detectable effect. 5 seeds detect ~0.01 if the seed SD is ≤ 0.004.
 | :--- | :--- |
 | Letterbox warp, instance pairing, GT-soft control, strict guards | done, tested (v1) |
 | D4 augmentation (dataset + teacher + trainer switch `train.d4_aug`) | **done, tested** |
-| Stage A notebooks `A1`–`A4` + `B1_benchmark_speed` | **generated** |
+| Box-cropped, GT-gated mask-KL (`mask_kd.box_crop`, `mask_kd.gt_gate`) | **done, tested** (unit + 1-epoch smoke) |
+| Stage A notebooks `A1`–`A5` + `B1_benchmark_speed` | **generated** |
 | Scale-matched tiling, soft instance maps, pixel F1 / IoU / clDice / clIoU evaluator | to build before Stage D |
 | CFD / GAPs384 / CRKWH100 download + conversion | to do before Stage D |
-| GT-gated KD, teacher TTA | Stage B, only if the gate needs them |
+| Teacher TTA, teacher following scale/translate | Stage B, only if the gate needs them |
 
 ## 9. Sources
 

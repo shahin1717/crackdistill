@@ -9,7 +9,7 @@ import json
 import unittest
 from pathlib import Path
 
-ARMS = ("A1_baseline_d4", "A2_mask_kd_d4", "A3_gt_soft_d4", "A4_baseline_ultra_aug")
+ARMS = ("A1_baseline_d4", "A2_mask_kd_d4", "A3_gt_soft_d4", "A4_baseline_ultra_aug", "A5_mask_kd_gated_d4")
 
 
 def notebook_text(path: Path) -> str:
@@ -51,6 +51,14 @@ class TestNotebookSuite(unittest.TestCase):
         self.assertIn("'distillation.enabled': False", text)
         self.assertIn("'train.d4_aug': True", text)
         self.assertNotIn('overrides["teacher.logits_dir"]', text)
+
+    def test_gated_kd_differs_from_a2_only_in_the_gate(self):
+        a2 = notebook_text(self.final_dir / "A2_mask_kd_d4_seed0.ipynb")
+        a5 = notebook_text(self.final_dir / "A5_mask_kd_gated_d4_seed0.ipynb")
+        self.assertIn("'distillation.losses.mask_kd.box_crop': True", a5)
+        self.assertIn("'distillation.losses.mask_kd.gt_gate': True", a5)
+        self.assertNotIn("'distillation.losses.mask_kd.box_crop'", a2)
+        self.assertIn("'train.d4_aug': True", a5)
 
     def test_reference_baseline_uses_ultralytics_default_aug(self):
         text = notebook_text(self.final_dir / f"A4_baseline_ultra_aug_seed{self.seeds['baseline_ultra_aug'][0]}.ipynb")

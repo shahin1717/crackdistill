@@ -9,9 +9,10 @@ Each notebook is self-contained (sources embedded with `%%writefile`) and pins `
 | `A2_mask_kd_d4_seed0.ipynb` | Mask-KD from SAM 2 + D4 augmentation | 0 | ~2-3 h |
 | `A3_gt_soft_d4_seed0.ipynb` | GT-Soft Control + D4 augmentation | 0 | ~2-3 h |
 | `A4_baseline_ultra_aug_seed0.ipynb` | Baseline + Ultralytics default augmentation (reference) | 0 | ~2-3 h |
+| `A5_mask_kd_gated_d4_seed0.ipynb` | Box-cropped, GT-gated Mask-KD + D4 augmentation | 0 | ~2-3 h |
 | `B1_benchmark_speed.ipynb` | Single-tile and measured full-scene latency | — | ~5 min |
 
-Stage A = 4 runs (~10 T4-hours). It decides whether KD beats a strong baseline; confirmatory seeds 1-4
+Stage A = 5 runs (~12 T4-hours). It decides whether KD beats a strong baseline; confirmatory seeds 1-4
 are generated only after that (see the design doc). The v1 notebooks (no spatial augmentation, already run
 for seed 0) are frozen in `v1_no_aug/`.
 

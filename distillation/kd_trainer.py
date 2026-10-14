@@ -124,6 +124,32 @@ def d4_boxes(xywh, k):
     return torch.stack((x, y, w, h), dim=-1)
 
 
+def kd_pixel_weight(valid, boxes_xyxy, gt_masks, teacher_logits, box_crop=False, gt_gate=False):
+    """
+    Per-instance pixel weights (N, H, W) for the mask-KL on an H x W KD grid.
+
+    valid: (H, W) bool letterbox content. boxes_xyxy: (N, 4) GT boxes normalized to the canvas.
+    gt_masks: (N, h, w) GT instance masks on the same canvas (any resolution). teacher_logits: (N, H, W).
+    box_crop: only pixels inside the instance's GT box, as in YOLO's own mask loss (a crack covers ~1% of
+    the canvas, so the uncropped KL is ~97% "background is background").
+    gt_gate: only pixels where the teacher (logit > 0) agrees with the GT mask; SAM misses ~44% of GT pixels
+    on cracks <= 4 px wide and the KL would otherwise pull the student towards background there.
+    """
+    n, h, w = teacher_logits.shape
+    weight = valid.to(teacher_logits.device).expand(n, h, w).float()
+    if box_crop:
+        ys = (torch.arange(h, device=teacher_logits.device) + 0.5) / h
+        xs = (torch.arange(w, device=teacher_logits.device) + 0.5) / w
+        b = boxes_xyxy.to(teacher_logits.device).float()
+        inside = ((xs[None, None, :] >= b[:, 0, None, None]) & (xs[None, None, :] <= b[:, 2, None, None])
+                  & (ys[None, :, None] >= b[:, 1, None, None]) & (ys[None, :, None] <= b[:, 3, None, None]))
+        weight = weight * inside.float()
+    if gt_gate:
+        gt = F.interpolate(gt_masks[:, None].float().to(teacher_logits.device), size=(h, w), mode="nearest")[:, 0] > 0.5
+        weight = weight * ((teacher_logits > 0) == gt).float()
+    return weight
+
+
 class D4AugDataset(torch.utils.data.Dataset):
     """
     Applies a uniformly random D4 element to a formatted Ultralytics training item (img, masks, sem_masks,
@@ -1040,9 +1066,24 @@ class KDSegmentationTrainer(SegmentationTrainer):
                         
                         kl = q * (torch.log(q + 1e-8) - p_log) + inv_q * (torch.log(inv_q + 1e-8) - inv_p_log)
                         
+                        # Box-cropped and/or GT-gated Mask-KL (normalized by box area, like YOLO's mask loss)
+                        box_crop = bool(getattr(mask_kd_cfg, "box_crop", False))
+                        gt_gate = bool(getattr(mask_kd_cfg, "gt_gate", False))
                         # Foreground-Dilated / Region-Focused Mask-KL (if enabled)
                         use_focused = getattr(mask_kd_cfg, "focused", False) or getattr(mask_kd_cfg, "foreground_dilated", False)
-                        if use_focused:
+                        if box_crop or gt_gate:
+                            scale = torch.tensor([imgsz[1], imgsz[0], imgsz[1], imgsz[0]], device=target_bboxes.device, dtype=target_bboxes.dtype)
+                            boxes_norm = target_bboxes[i][fg_mask_i][valid_idx_mask] / scale
+                            gt_masks_i = None
+                            if gt_gate:
+                                all_masks = batch["masks"]
+                                in_img = batch["batch_idx"].view(-1).to(all_masks.device) == i
+                                gt_masks_i = all_masks[in_img][mask_idx.to(all_masks.device)]
+                            wmap = kd_pixel_weight(valid_content_mask, boxes_norm, gt_masks_i, sam_logits_matched_resized, box_crop, gt_gate)
+                            area = kd_pixel_weight(valid_content_mask, boxes_norm, None, sam_logits_matched_resized, box_crop, False)
+                            kl_w = (kl * wmap).sum(dim=(-1, -2)) / area.sum(dim=(-1, -2)).clamp(min=1.0)
+                            loss_mask_kd = loss_mask_kd + kl_w.mean() * (self.temperature ** 2)
+                        elif use_focused:
                             fg_core = (q > 0.35).float().unsqueeze(1)
                             fg_dilated = F.max_pool2d(fg_core, kernel_size=9, stride=1, padding=4).squeeze(1)
                             fg_core = fg_core.squeeze(1)

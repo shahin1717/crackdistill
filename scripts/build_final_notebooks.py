@@ -647,7 +647,7 @@ print("=" * 68)
 # v2 Stage A (see docs/KD_DESIGN_v2.md): one seed per arm decides whether augmentation-consistent KD beats a
 # strong baseline. Confirmatory seeds 1-4 are added here only after that gate. v1 (no spatial augmentation)
 # notebooks are frozen in final_notebooks/v1_no_aug/.
-SEEDS = {"baseline_d4": (0,), "mask_kd_d4": (0,), "gt_soft_d4": (0,), "baseline_ultra_aug": (0,)}
+SEEDS = {"baseline_d4": (0,), "mask_kd_d4": (0,), "gt_soft_d4": (0,), "baseline_ultra_aug": (0,), "mask_kd_gated_d4": (0,)}
 TIER1_SEEDS = SEEDS
 
 # Mask-KD and the GT-soft control share one config; only the teacher targets differ.
@@ -685,6 +685,8 @@ D4 = {"train.d4_aug": True}
 # Ultralytics' default augmentation (mosaic, scale, translate, flips): the "how YOLO is normally trained" reference.
 # The cached teacher cannot follow mosaic/scale, so this exists only as a baseline.
 ULTRA_AUG = {"train.allow_spatial_aug": True}
+# Mask-KL only inside each crack's GT box (normalized by box area) and only where SAM agrees with the GT
+GATED = {"distillation.losses.mask_kd.box_crop": True, "distillation.losses.mask_kd.gt_gate": True}
 
 ARMS = [
     # (file prefix, arm, title, description, config, prompt_type, logits_dir)
@@ -703,6 +705,10 @@ ARMS = [
      "Task loss only with Ultralytics' default augmentation (mosaic, scale, translate, flips). Shows where ordinary YOLO "
      "training lands; not part of the paired KD comparison.",
      {**CFG_BASELINE, **ULTRA_AUG}, "none", "data/teacher_logits_box"),
+    ("A5_mask_kd_gated_d4", "mask_kd_gated_d4", "Box-cropped, GT-gated Mask-KD + D4 augmentation",
+     "Same teacher, T, w and augmentation as A2, but the KL only covers each crack's GT box (normalized by box area, "
+     "like YOLO's mask loss) and only pixels where SAM agrees with the GT.",
+     {**CFG_MASK_KD, **D4, **GATED}, "box", "data/teacher_logits_box"),
 ]
 
 
@@ -738,7 +744,7 @@ Each notebook is self-contained (sources embedded with `%%writefile`) and pins `
 """ + "\n".join(f"| `{prefix}_seed{seeds_txt(arm)}.ipynb` | {title} | {seeds_txt(arm)} | ~2-3 h |" for prefix, arm, title, *_ in ARMS) + f"""
 | `B1_benchmark_speed.ipynb` | Single-tile and measured full-scene latency | — | ~5 min |
 
-Stage A = 4 runs (~10 T4-hours). It decides whether KD beats a strong baseline; confirmatory seeds 1-4
+Stage A = 5 runs (~12 T4-hours). It decides whether KD beats a strong baseline; confirmatory seeds 1-4
 are generated only after that (see the design doc). The v1 notebooks (no spatial augmentation, already run
 for seed 0) are frozen in `v1_no_aug/`.
 
@@ -828,14 +834,14 @@ Attach the same dataset to every notebook (e.g. `distill-datasetforme`). Step 1 
 **Every training log** must also show `Seed: <S>` and `overlap_mask=False`, and must **never** show
 `Redirecting logits_dir`, `Missing letterbox metadata` or `No teacher logits ... matched` (in strict mode the
 last two stop the run).
-- A1-A3: `D4 augmentation ON` and `mosaic=0.0` in the Ultralytics args.
+- A1-A3, A5: `D4 augmentation ON` and `mosaic=0.0` in the Ultralytics args.
 - A4: **no** `D4 augmentation ON` line, and `mosaic=1.0`, `fliplr=0.5`, `scale=0.5` in the args.
 
 ## Run order
 
 1. `A1_baseline_d4_seed0` and `A2_mask_kd_d4_seed0` first (the decisive pair), then `A4_baseline_ultra_aug_seed0`.
-2. `A3_gt_soft_d4_seed0`.
-3. Send the four executed notebooks back; the decision gate in `docs/KD_DESIGN_v2.md` picks what runs next.
+2. `A5_mask_kd_gated_d4_seed0`, then `A3_gt_soft_d4_seed0`.
+3. Send the five executed notebooks back; the decision gate in `docs/KD_DESIGN_v2.md` picks what runs next.
 
 ## After downloading (local)
 

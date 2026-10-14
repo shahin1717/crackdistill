@@ -172,5 +172,37 @@ class TestTrainerD4Wiring(unittest.TestCase):
             self._trainer(True, **{"distillation.losses.feature.enabled": True})
 
 
+class TestKDPixelWeight(unittest.TestCase):
+    """Box-cropped, GT-gated mask-KL weights (crack covers ~1% of the canvas; SAM misses ~44% of thin-crack pixels)."""
+
+    def setUp(self):
+        from distillation.kd_trainer import kd_pixel_weight
+        self.f = kd_pixel_weight
+        H = W = 16
+        self.valid = torch.ones(H, W, dtype=torch.bool)
+        self.valid[:2] = False                                   # letterbox padding rows
+        self.box = torch.tensor([[4 / 16, 2 / 16, 12 / 16, 8 / 16]])  # x0, y0, x1, y1 normalized
+        self.gt = torch.zeros(1, 8, 8)                           # GT at half resolution
+        self.gt[0, 2:4, 3:5] = 1                                 # -> canvas rows 4-7, cols 6-9
+        self.teacher = torch.full((1, H, W), -10.0)
+        self.teacher[0, 4:8, 6:8] = 10.0                         # teacher finds the left half of the crack
+        self.teacher[0, 9:11, 6:10] = 10.0                       # ... and paints outside the GT (and outside the box)
+
+    def test_plain_is_valid_area(self):
+        w = self.f(self.valid, self.box, self.gt, self.teacher, box_crop=False, gt_gate=False)
+        self.assertTrue(torch.equal(w[0].bool(), self.valid))
+
+    def test_box_crop_keeps_only_box_pixels(self):
+        w = self.f(self.valid, self.box, self.gt, self.teacher, box_crop=True, gt_gate=False)[0]
+        self.assertEqual(int(w.sum()), (12 - 4) * (8 - 2))
+        self.assertEqual(int(w[:, :4].sum() + w[:, 12:].sum() + w[8:].sum()), 0)
+
+    def test_gt_gate_drops_disagreement(self):
+        w = self.f(self.valid, self.box, self.gt, self.teacher, box_crop=True, gt_gate=True)[0]
+        self.assertEqual(int(w[4:8, 6:8].sum()), 8)   # teacher = GT = crack -> kept
+        self.assertEqual(int(w[4:8, 8:10].sum()), 0)  # GT crack the teacher missed -> dropped
+        self.assertEqual(int(w[2:4, 4:6].sum()), 4)   # both background, inside the box -> kept
+
+
 if __name__ == "__main__":
     unittest.main()

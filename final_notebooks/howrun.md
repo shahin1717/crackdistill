@@ -36,24 +36,26 @@ Attach the same dataset to every notebook (e.g. `distill-datasetforme`). Step 1 
 | `A2_mask_kd_d4_seed0.ipynb` | Mask-KD from SAM 2 + D4 augmentation, seed 0 | 1 | Crack500 dataset **+** SAM 2 teacher logits folder (`teacher_logits/` or `teacher_logits_box/`, 2196 `*_logits.npy`) | `results/mask_kd_d4_seed0_150ep.json`, `runs/segment/crack_distill/mask_kd_d4_seed0_150ep/weights/best.pt` | `[Verification] Found 2196 teacher logit files` and `KD losses computed: mask_kd: ...` |
 | `A3_gt_soft_d4_seed0.ipynb` | GT-Soft Control + D4 augmentation, seed 0 | 1 | Crack500 dataset only | `results/gt_soft_d4_seed0_150ep.json`, `runs/segment/crack_distill/gt_soft_d4_seed0_150ep/weights/best.pt` | `GT-Soft logits completed: 1896 generated` and `KD losses computed: mask_kd: ...` |
 | `A4_baseline_ultra_aug_seed0.ipynb` | Baseline + Ultralytics default augmentation (reference), seed 0 | 1 | Crack500 dataset only | `results/baseline_ultra_aug_seed0_150ep.json`, `runs/segment/crack_distill/baseline_ultra_aug_seed0_150ep/weights/best.pt` | `Clean Baseline Control: Native YOLO setup` and **no** `KD losses computed` line |
+| `A5_mask_kd_gated_d4_seed0.ipynb` | Box-cropped, GT-gated Mask-KD + D4 augmentation, seed 0 | 1 | Crack500 dataset **+** SAM 2 teacher logits folder (`teacher_logits/` or `teacher_logits_box/`, 2196 `*_logits.npy`) | `results/mask_kd_gated_d4_seed0_150ep.json`, `runs/segment/crack_distill/mask_kd_gated_d4_seed0_150ep/weights/best.pt` | `[Verification] Found 2196 teacher logit files` and `KD losses computed: mask_kd: ...` |
 | `B1_benchmark_speed.ipynb` | Latency, single tile + full 2000x1500 scene | — | nothing (times the pretrained `yolo11n-seg.pt`; same architecture as the student) | the printed summary | `Serial Pipeline : ... [measured on cuda]` |
 
 - **Baseline + D4 augmentation:** Teacher logits are not read, even if attached.
 - **Mask-KD from SAM 2 + D4 augmentation:** Without logits it tries to generate them with SAM 2 (untested on Kaggle, hours) — attach them.
 - **GT-Soft Control + D4 augmentation:** Never uses SAM logits; it generates 1896 blurred-GT targets itself in Step 2.
 - **Baseline + Ultralytics default augmentation (reference):** Teacher logits are not read, even if attached.
+- **Box-cropped, GT-gated Mask-KD + D4 augmentation:** Without logits it tries to generate them with SAM 2 (untested on Kaggle, hours) — attach them.
 
 **Every training log** must also show `Seed: <S>` and `overlap_mask=False`, and must **never** show
 `Redirecting logits_dir`, `Missing letterbox metadata` or `No teacher logits ... matched` (in strict mode the
 last two stop the run).
-- A1-A3: `D4 augmentation ON` and `mosaic=0.0` in the Ultralytics args.
+- A1-A3, A5: `D4 augmentation ON` and `mosaic=0.0` in the Ultralytics args.
 - A4: **no** `D4 augmentation ON` line, and `mosaic=1.0`, `fliplr=0.5`, `scale=0.5` in the args.
 
 ## Run order
 
 1. `A1_baseline_d4_seed0` and `A2_mask_kd_d4_seed0` first (the decisive pair), then `A4_baseline_ultra_aug_seed0`.
-2. `A3_gt_soft_d4_seed0`.
-3. Send the four executed notebooks back; the decision gate in `docs/KD_DESIGN_v2.md` picks what runs next.
+2. `A5_mask_kd_gated_d4_seed0`, then `A3_gt_soft_d4_seed0`.
+3. Send the five executed notebooks back; the decision gate in `docs/KD_DESIGN_v2.md` picks what runs next.
 
 ## After downloading (local)
 
