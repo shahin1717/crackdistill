@@ -25,6 +25,7 @@ YOLOv11n-seg --> KDSegmentationTrainer: task loss + Bernoulli mask-KL (T=3.7769,
 | `scripts/generate_teacher_logits.py` | SAM 2 teacher logits (offline) |
 | `scripts/generate_gt_soft_logits.py` | Blurred-GT targets for the control arm |
 | `scripts/verify_alignment.py` | Teacher-vs-GT alignment on the real training transforms → `reports/alignment_verification.json` |
+| `scripts/prepare_ood_datasets.py` | Zero-shot test sets (CFD, GAPs384, CRKWH100, DeepCrack …) → image/mask PNG pairs; sources in [`docs/DATASETS.md`](docs/DATASETS.md) |
 | `scripts/evaluate_canonical_test_set.py` | Canonical test split + 200 full-size test photos (tiled vs direct) |
 | `scripts/aggregate_multiseed_results.py` | Per-arm stats and seed-paired comparisons |
 | `reports/*.tex` | Manuscript drafts; their numbers predate the fixes and must be rewritten |
@@ -35,7 +36,7 @@ YOLOv11n-seg --> KDSegmentationTrainer: task loss + Bernoulli mask-KL (T=3.7769,
 - **Local** (`conda activate distill`, Ultralytics 8.4.60):
 
 ```bash
-python -m unittest discover -s tests                                            # 67 tests
+python -m unittest discover -s tests                                            # 77 tests
 python scripts/verify_alignment.py --logits-dir data/teacher_logits_box         # alignment gate
 python scripts/evaluate_canonical_test_set.py --weights <best.pt> --arm mask_kd --seed 0
 python scripts/aggregate_multiseed_results.py --results-dir results/test --metric in_domain_mask_mAP50

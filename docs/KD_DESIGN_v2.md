@@ -7,7 +7,7 @@ they render on GitHub, in Obsidian and in VS Code's Markdown preview.*
 
 | Question | Decision | Why (details below) |
 | :--- | :--- | :--- |
-| Training data | Crack500 **train crops only** (1,896), identical for every arm | Standard benchmark; uncropped train photos are not in the public release; extra data would confound KD vs baseline |
+| Training data | Crack500 **train crops only** (1,896), identical for every arm | Standard benchmark; uncropped train photos are only in an old mirror; extra data would confound KD vs baseline. Downloads: [`DATASETS.md`](DATASETS.md) |
 | Test data | (a) the **1,124 canonical test crops**, (b) the **200 full test photos**, (c) **zero-shot** CFD, GAPs384, CRKWH100 (+ DeepCrack as near-OOD) | (a) matches the literature, (b) is the deployment case, (c) is real out-of-distribution |
 | Train on crops or full photos? | Crops, at their **native pixel scale** (×0.8 inside the 512 canvas) | Crack widths: median 15–17 px, 10th percentile 3.4 px — downscaling full photos erases the thin ones |
 | Test on full photos how? | **Same pixel scale as training**: resize ×0.8, 512×512 tiles, 50% overlap, Gaussian blending, val-tuned threshold | Train/test scale must match; tiling is standard (nnU-Net, SAHI) |
@@ -33,7 +33,8 @@ they render on GitHub, in Obsidian and in VS Code's Markdown preview.*
 
 ## 3. Data
 
-**Crack500 facts (checked locally):** 250 / 50 / 200 photos. Train exists only as crops: an exact 4×4 grid
+**Crack500 facts (checked locally):** 250 / 50 / 200 photos. The official release has train only as crops (an
+older Kaggle mirror also has the 250 full train photos — see [`DATASETS.md`](DATASETS.md)): an exact 4×4 grid
 (640×360 from 2560×1440, 648×484 from 2592×1936), keeping crops with >1,000 crack pixels. The 1,124 test crops
 come from **148** of the 200 test photos; the other 52 (`IMG_*`, mostly 3264×2448) exist only as full photos.
 65% of full photos carry an EXIF rotation that their masks do **not** follow.
@@ -182,7 +183,7 @@ flowchart TB
     A["Stage A — seed 0, 5 runs, ~12 T4-h<br/>A1 baseline+D4 · A2 Mask-KD+D4 · A3 GT-soft+D4<br/>A4 baseline+Ultralytics aug · A5 gated Mask-KD+D4"]
     A --> G{"val (crops): best of A2/A5 = KD*<br/>vs A1 and A4"}
     G -->|"KD* > A1 and KD* ≥ A4"| C["Stage C — confirm<br/>A1, KD*, A3 × seeds 1–4 (+A4 × 1–4)<br/>~35–40 T4-h"]
-    G -->|"KD* > A1 but A4 > KD*"| B["Stage B — close the gap (pick 1–2, seed 0)<br/>• teacher TTA: average SAM over 8 D4 views<br/>• teacher follows scale/translate too<br/>• T ∈ {1, 2} for the gated loss"]
+    G -->|"KD* > A1 but A4 > KD*"| B["Stage B — close the gap (pick 1–2, seed 0)<br/>• teacher TTA: average SAM over 8 D4 views<br/>• teacher follows scale/translate too<br/>• T ∈ {1, 2} for the gated loss<br/>• native random tiles + crack-free negatives<br/>from the 250 full train photos"]
     G -->|"KD* ≤ A1"| N["KD does not help once augmentation is on.<br/>Report v1 + A-stage honestly as a negative result;<br/>add a data-efficiency curve (25/50/100% data)"]
     B --> G
     C --> D["Stage D — local, inference only<br/>test crops · 200 full photos · zero-shot OOD · speed<br/>seed-paired stats, bootstrap over parent photos"]
@@ -219,7 +220,7 @@ KD\* = the better of A2 / A5 on val, fixed before Stage C.
 | Box-cropped, GT-gated mask-KL (`mask_kd.box_crop`, `mask_kd.gt_gate`) | **done, tested** (unit + 1-epoch smoke) |
 | Stage A notebooks `A1`–`A5` + `B1_benchmark_speed` | **generated** |
 | Scale-matched tiling, soft instance maps, pixel F1 / IoU / clDice / clIoU evaluator | to build before Stage D |
-| CFD / GAPs384 / CRKWH100 download + conversion | to do before Stage D |
+| CFD / GAPs384 / CRKWH100 download recipes + `scripts/prepare_ood_datasets.py` | **done, tested** ([`DATASETS.md`](DATASETS.md)); the downloads themselves are yours to run |
 | Teacher TTA, teacher following scale/translate | Stage B, only if the gate needs them |
 
 ## 9. Sources
