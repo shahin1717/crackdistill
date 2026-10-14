@@ -104,6 +104,58 @@ def warp_to_letterbox(tensor, box, target_hw, pad_value):
     return F.pad(unpad, (left, right, top, bottom), mode="constant", value=pad_value)
 
 
+def d4_apply(t, k):
+    """
+    Element k (0-7) of the dihedral group D4 on the last two (square) dims: rotate 90 deg * (k % 4)
+    with torch.rot90, then flip left-right if k >= 4. Exact on any square grid, so the letterboxed
+    image, the 1/4-res GT masks and the warped teacher map can all follow the same augmentation.
+    """
+    t = torch.rot90(t, k % 4, dims=(-2, -1))
+    return torch.flip(t, dims=(-1,)) if k >= 4 else t
+
+
+def d4_boxes(xywh, k):
+    """Normalized xywh boxes (N, 4) under d4_apply(., k)."""
+    x, y, w, h = xywh.unbind(-1)
+    for _ in range(k % 4):  # rot90: pixel (row, col) -> (S-1-col, row)
+        x, y, w, h = y, 1 - x, h, w
+    if k >= 4:
+        x = 1 - x
+    return torch.stack((x, y, w, h), dim=-1)
+
+
+class D4AugDataset(torch.utils.data.Dataset):
+    """
+    Applies a uniformly random D4 element to a formatted Ultralytics training item (img, masks, sem_masks,
+    bboxes) and records it as item["d4"], so the KD loss can apply the same element to the teacher map.
+    Used for every arm (baseline included) when train.d4_aug is on, keeping the augmentation policy identical.
+    """
+    def __init__(self, base_dataset):
+        self.base_dataset = base_dataset
+
+    def __len__(self):
+        return len(self.base_dataset)
+
+    def __getitem__(self, idx):
+        import random
+        item = self.base_dataset[idx]
+        k = random.randrange(8)
+        for key in ("img", "masks", "sem_masks"):
+            if key in item and torch.is_tensor(item[key]) and item[key].ndim >= 2:
+                item[key] = d4_apply(item[key], k).contiguous()
+        if "bboxes" in item and len(item["bboxes"]):
+            item["bboxes"] = d4_boxes(item["bboxes"], k)
+        item["d4"] = k
+        return item
+
+    @property
+    def collate_fn(self):
+        return self.base_dataset.collate_fn
+
+    def __getattr__(self, name):
+        return getattr(self.base_dataset, name)
+
+
 class KDYOLODataset(torch.utils.data.Dataset):
     """
     Wrapper for YOLO Dataset that preloads SAM teacher logits and features
@@ -195,6 +247,7 @@ class KDSegmentationTrainer(SegmentationTrainer):
 
         if cfg is None:
             cfg = DEFAULT_CFG
+        d4_aug = False
 
         # Auto-convert master ConfigNode / master dict into Ultralytics cfg if master config passed directly
         if hasattr(cfg, "student") or (isinstance(cfg, dict) and "student" in cfg):
@@ -337,6 +390,10 @@ class KDSegmentationTrainer(SegmentationTrainer):
             if not allow_spatial_aug:
                 auto_overrides.update(SPATIAL_AUG_OFF)
                 print(f"[Augmentation Policy] Spatial augmentations (mosaic, affine, flip, erasing) disabled for controlled comparison (allow_spatial_aug=False). Seed: {seed_val}")
+            # Teacher-consistent geometric augmentation (flips + 90-degree rotations), same for every arm
+            d4_aug = bool(getattr(getattr(master_cfg, "train", None), "d4_aug", False))
+            if d4_aug:
+                print("[Augmentation Policy] D4 augmentation ON (8 flips/90-degree rotations, applied to image, GT and teacher alike).")
 
             if overrides and isinstance(overrides, dict):
                 auto_overrides.update(overrides)
@@ -404,6 +461,13 @@ class KDSegmentationTrainer(SegmentationTrainer):
         self._no_logits_warned = False
         self._geom_fallback_warned = False
         self._kd_unmatched_batches = 0
+        self.d4_aug = d4_aug
+        self._current_d4 = None
+        if self.d4_aug and self.is_kd_on and kd_cfg is not None:
+            losses = getattr(kd_cfg, "losses", None)
+            unsupported = [n for n in ("feature", "affinity") if getattr(getattr(losses, n, None), "enabled", False)]
+            if unsupported:
+                raise ValueError(f"train.d4_aug does not transform teacher features / affinity crops; disable {unsupported}.")
         self._sam_targets = {}   # image_stem → soft target tensor (M, 256, 256)
         self._sam_features = {}  # image_stem → dict of features
         self._hook_handles = []
@@ -705,6 +769,8 @@ class KDSegmentationTrainer(SegmentationTrainer):
     def build_dataset(self, img_path: str, mode: str = "train", batch: int | None = None):
         """Build custom KD dataset that wraps the default YOLO dataset."""
         base_dataset = super().build_dataset(img_path, mode, batch)
+        if mode == "train" and self.d4_aug:
+            base_dataset = D4AugDataset(base_dataset)
         if mode != "train" or not self.is_kd_on:
             return base_dataset
         return KDYOLODataset(base_dataset, self.logits_dir, self.kd_cfg)
@@ -748,6 +814,7 @@ class KDSegmentationTrainer(SegmentationTrainer):
         self._current_paths = list(im_files)
         self._current_ratio_pad = batch.get("ratio_pad", None)
         self._current_ori_shape = batch.get("ori_shape", None)
+        self._current_d4 = batch.get("d4", None)
 
         # Retrieve the preloaded SAM targets and features from the batch dict
         sam_targets_list = batch.get("sam_target", [])
@@ -950,6 +1017,12 @@ class KDSegmentationTrainer(SegmentationTrainer):
                         )
                         t_top, t_left = 0, 0
                         t_unpad_h, t_unpad_w = target_h, target_w
+
+                    # D4 augmentation: the student canvas was flipped/rotated in the dataset; do the same to the teacher
+                    d4_list = getattr(self, "_current_d4", None)
+                    if d4_list is not None and i < len(d4_list) and int(d4_list[i]) != 0:
+                        sam_logits_matched_resized = d4_apply(sam_logits_matched_resized, int(d4_list[i]))
+                        valid_content_mask = d4_apply(valid_content_mask, int(d4_list[i]))
 
                     # Align dtypes to prevent precision/autocast mismatches
                     sam_logits_matched_resized = sam_logits_matched_resized.to(dtype=student_mask_logits_resized.dtype)

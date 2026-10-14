@@ -9,7 +9,7 @@ import json
 import unittest
 from pathlib import Path
 
-ARMS = ("1_baseline", "2_mask_kd", "3_gt_soft")
+ARMS = ("A1_baseline_d4", "A2_mask_kd_d4", "A3_gt_soft_d4", "A4_baseline_ultra_aug")
 
 
 def notebook_text(path: Path) -> str:
@@ -26,7 +26,7 @@ class TestNotebookSuite(unittest.TestCase):
         self.seeds = SEEDS
 
     def test_all_notebooks_valid_json(self):
-        notebooks = list(self.final_dir.glob("[1-9]_*.ipynb"))  # builder-generated suite only
+        notebooks = list(self.final_dir.glob("[AB][0-9]_*.ipynb"))  # builder-generated suite only
         self.assertEqual(len(notebooks), sum(len(v) for v in self.seeds.values()) + 1)
         for nb_path in notebooks:
             with open(nb_path, encoding="utf-8") as f:
@@ -47,21 +47,29 @@ class TestNotebookSuite(unittest.TestCase):
                 self.assertIn("resolve_checkpoint", text)
 
     def test_baseline_notebook(self):
-        text = notebook_text(self.final_dir / f"1_baseline_seed{self.seeds['baseline'][0]}.ipynb")
+        text = notebook_text(self.final_dir / f"A1_baseline_d4_seed{self.seeds['baseline_d4'][0]}.ipynb")
         self.assertIn("'distillation.enabled': False", text)
+        self.assertIn("'train.d4_aug': True", text)
         self.assertNotIn('overrides["teacher.logits_dir"]', text)
+
+    def test_reference_baseline_uses_ultralytics_default_aug(self):
+        text = notebook_text(self.final_dir / f"A4_baseline_ultra_aug_seed{self.seeds['baseline_ultra_aug'][0]}.ipynb")
+        self.assertIn("'distillation.enabled': False", text)
+        self.assertIn("'train.allow_spatial_aug': True", text)
+        self.assertNotIn("'train.d4_aug': True", text)
 
     def test_mask_kd_and_gt_soft_share_the_loss_config(self):
         def overrides_block(text):
             start = text.index("overrides = {")
             return text[start:text.index("}", start)]
 
-        kd = notebook_text(self.final_dir / f"2_mask_kd_seed{self.seeds['mask_kd'][0]}.ipynb")
-        gt = notebook_text(self.final_dir / f"3_gt_soft_seed{self.seeds['gt_soft'][0]}.ipynb")
+        kd = notebook_text(self.final_dir / f"A2_mask_kd_d4_seed{self.seeds['mask_kd_d4'][0]}.ipynb")
+        gt = notebook_text(self.final_dir / f"A3_gt_soft_d4_seed{self.seeds['gt_soft_d4'][0]}.ipynb")
         self.assertEqual(overrides_block(kd), overrides_block(gt))
         self.assertIn("'distillation.losses.feature.enabled': False", kd)
         self.assertIn("'distillation.progressive.enabled': False", kd)
         self.assertIn('overrides["teacher.logits_dir"] = "data/teacher_logits_box/"', kd)
+        self.assertIn("'train.d4_aug': True", kd)
 
     def _run_step1(self, notebook, fake_input: Path, cwd: Path):
         """Execute the notebook's Step 1 cell against a fake /kaggle/input tree."""
@@ -89,7 +97,7 @@ class TestNotebookSuite(unittest.TestCase):
             (root / "teacher_logits").mkdir(parents=True)
             work = Path(tmp) / "work"
             work.mkdir()
-            self._run_step1(f"2_mask_kd_seed{self.seeds['mask_kd'][0]}.ipynb", Path(tmp) / "input", work)
+            self._run_step1(f"A2_mask_kd_d4_seed{self.seeds['mask_kd_d4'][0]}.ipynb", Path(tmp) / "input", work)
             self.assertEqual((work / "data/datasets/crack500").resolve(), (root / "datasets" / "crack500").resolve())
             self.assertFalse((work / "data/datasets/crack500_yolo").exists())
             self.assertEqual((work / "data/teacher_logits_box").resolve(), (root / "teacher_logits").resolve())
@@ -103,11 +111,11 @@ class TestNotebookSuite(unittest.TestCase):
                 (root / name / "dataset.yaml").write_text("path: .\n")
             work = Path(tmp) / "work"
             work.mkdir()
-            self._run_step1(f"1_baseline_seed{self.seeds['baseline'][0]}.ipynb", Path(tmp) / "input", work)
+            self._run_step1(f"A1_baseline_d4_seed{self.seeds['baseline_d4'][0]}.ipynb", Path(tmp) / "input", work)
             self.assertEqual((work / "data/datasets/crack500_yolo").resolve(), (root / "crack500_yolo").resolve())
 
     def test_gt_soft_never_uses_sam_logits(self):
-        text = notebook_text(self.final_dir / f"3_gt_soft_seed{self.seeds['gt_soft'][0]}.ipynb")
+        text = notebook_text(self.final_dir / f"A3_gt_soft_d4_seed{self.seeds['gt_soft_d4'][0]}.ipynb")
         self.assertIn('overrides["teacher.logits_dir"] = "data/teacher_logits_gt_soft/"', text)
         self.assertIn("%%writefile scripts/generate_gt_soft_logits.py", text)
         self.assertIn("scripts/generate_gt_soft_logits.py --data data/datasets/crack500_yolo --out data/teacher_logits_gt_soft", text)

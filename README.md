@@ -6,7 +6,7 @@ At inference the student runs alone.
 
 > **Status (2026-09-28):** all KD results produced before this date are invalid: the teacher was
 > misaligned and mispaired during training. The confirmatory study has not been run yet, so this repo
-> currently makes **no** accuracy claim. See [`EXPERIMENTS.md`](EXPERIMENTS.md).
+> currently makes **no** accuracy claim. Design: [`docs/KD_DESIGN_v2.md`](docs/KD_DESIGN_v2.md).
 
 ```
 SAM 2 Large --(offline, once)--> teacher logits <stem>_logits.npy (M x 256 x 256)
@@ -35,7 +35,7 @@ YOLOv11n-seg --> KDSegmentationTrainer: task loss + Bernoulli mask-KL (T=3.7769,
 - **Local** (`conda activate distill`, Ultralytics 8.4.60):
 
 ```bash
-python -m unittest discover -s tests                                            # 56 tests
+python -m unittest discover -s tests                                            # 67 tests
 python scripts/verify_alignment.py --logits-dir data/teacher_logits_box         # alignment gate
 python scripts/evaluate_canonical_test_set.py --weights <best.pt> --arm mask_kd --seed 0
 python scripts/aggregate_multiseed_results.py --results-dir results/test --metric in_domain_mask_mAP50

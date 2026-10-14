@@ -1,5 +1,10 @@
 # CrackDistill — experiment plan (from 2026-09-28)
 
+> **Superseded on 2026-10-14 by [`docs/KD_DESIGN_v2.md`](docs/KD_DESIGN_v2.md).** v1 ran seed 0 with no spatial
+> augmentation: every arm overfit early (val peak at epoch 9–17). v2 adds teacher-consistent D4 augmentation for all
+> arms, an Ultralytics-augmented reference baseline, and the full-photo / zero-shot test protocol. The bug list
+> and verification below still apply.
+
 This file replaces the old audit reports, leaderboards and "next moves" notes. Anything not listed here
 is either done or dropped.
 

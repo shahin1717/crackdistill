@@ -32,36 +32,28 @@ Attach the same dataset to every notebook (e.g. `distill-datasetforme`). Step 1 
 
 | Notebook | Run | Tier | Attach | Download from Output | Check in the log |
 | :--- | :--- | :---: | :--- | :--- | :--- |
-| `1_baseline_seed0.ipynb` | Baseline (No KD), seed 0 | 1 | Crack500 dataset only | `results/baseline_seed0_150ep.json`, `runs/segment/crack_distill/baseline_seed0_150ep/weights/best.pt` | `Clean Baseline Control: Native YOLO setup` and **no** `KD losses computed` line |
-| `1_baseline_seed1.ipynb` | Baseline (No KD), seed 1 | 1 | Crack500 dataset only | `results/baseline_seed1_150ep.json`, `runs/segment/crack_distill/baseline_seed1_150ep/weights/best.pt` | `Clean Baseline Control: Native YOLO setup` and **no** `KD losses computed` line |
-| `1_baseline_seed2.ipynb` | Baseline (No KD), seed 2 | 1 | Crack500 dataset only | `results/baseline_seed2_150ep.json`, `runs/segment/crack_distill/baseline_seed2_150ep/weights/best.pt` | `Clean Baseline Control: Native YOLO setup` and **no** `KD losses computed` line |
-| `1_baseline_seed3.ipynb` | Baseline (No KD), seed 3 | 1 | Crack500 dataset only | `results/baseline_seed3_150ep.json`, `runs/segment/crack_distill/baseline_seed3_150ep/weights/best.pt` | `Clean Baseline Control: Native YOLO setup` and **no** `KD losses computed` line |
-| `1_baseline_seed4.ipynb` | Baseline (No KD), seed 4 | 1 | Crack500 dataset only | `results/baseline_seed4_150ep.json`, `runs/segment/crack_distill/baseline_seed4_150ep/weights/best.pt` | `Clean Baseline Control: Native YOLO setup` and **no** `KD losses computed` line |
-| `2_mask_kd_seed0.ipynb` | Mask-KD from SAM 2 (Box Prompts), seed 0 | 1 | Crack500 dataset **+** SAM 2 teacher logits folder (`teacher_logits/` or `teacher_logits_box/`, 2196 `*_logits.npy`) | `results/mask_kd_seed0_150ep.json`, `runs/segment/crack_distill/mask_kd_seed0_150ep/weights/best.pt` | `[Verification] Found 2196 teacher logit files` and `KD losses computed: mask_kd: ...` |
-| `2_mask_kd_seed1.ipynb` | Mask-KD from SAM 2 (Box Prompts), seed 1 | 1 | Crack500 dataset **+** SAM 2 teacher logits folder (`teacher_logits/` or `teacher_logits_box/`, 2196 `*_logits.npy`) | `results/mask_kd_seed1_150ep.json`, `runs/segment/crack_distill/mask_kd_seed1_150ep/weights/best.pt` | `[Verification] Found 2196 teacher logit files` and `KD losses computed: mask_kd: ...` |
-| `2_mask_kd_seed2.ipynb` | Mask-KD from SAM 2 (Box Prompts), seed 2 | 1 | Crack500 dataset **+** SAM 2 teacher logits folder (`teacher_logits/` or `teacher_logits_box/`, 2196 `*_logits.npy`) | `results/mask_kd_seed2_150ep.json`, `runs/segment/crack_distill/mask_kd_seed2_150ep/weights/best.pt` | `[Verification] Found 2196 teacher logit files` and `KD losses computed: mask_kd: ...` |
-| `2_mask_kd_seed3.ipynb` | Mask-KD from SAM 2 (Box Prompts), seed 3 | 1 | Crack500 dataset **+** SAM 2 teacher logits folder (`teacher_logits/` or `teacher_logits_box/`, 2196 `*_logits.npy`) | `results/mask_kd_seed3_150ep.json`, `runs/segment/crack_distill/mask_kd_seed3_150ep/weights/best.pt` | `[Verification] Found 2196 teacher logit files` and `KD losses computed: mask_kd: ...` |
-| `2_mask_kd_seed4.ipynb` | Mask-KD from SAM 2 (Box Prompts), seed 4 | 1 | Crack500 dataset **+** SAM 2 teacher logits folder (`teacher_logits/` or `teacher_logits_box/`, 2196 `*_logits.npy`) | `results/mask_kd_seed4_150ep.json`, `runs/segment/crack_distill/mask_kd_seed4_150ep/weights/best.pt` | `[Verification] Found 2196 teacher logit files` and `KD losses computed: mask_kd: ...` |
-| `3_gt_soft_seed0.ipynb` | GT-Soft Control (Blurred Ground Truth), seed 0 | 1 | Crack500 dataset only | `results/gt_soft_seed0_150ep.json`, `runs/segment/crack_distill/gt_soft_seed0_150ep/weights/best.pt` | `GT-Soft logits completed: 1896 generated` and `KD losses computed: mask_kd: ...` |
-| `3_gt_soft_seed1.ipynb` | GT-Soft Control (Blurred Ground Truth), seed 1 | 1 | Crack500 dataset only | `results/gt_soft_seed1_150ep.json`, `runs/segment/crack_distill/gt_soft_seed1_150ep/weights/best.pt` | `GT-Soft logits completed: 1896 generated` and `KD losses computed: mask_kd: ...` |
-| `3_gt_soft_seed2.ipynb` | GT-Soft Control (Blurred Ground Truth), seed 2 | 1 | Crack500 dataset only | `results/gt_soft_seed2_150ep.json`, `runs/segment/crack_distill/gt_soft_seed2_150ep/weights/best.pt` | `GT-Soft logits completed: 1896 generated` and `KD losses computed: mask_kd: ...` |
-| `3_gt_soft_seed3.ipynb` | GT-Soft Control (Blurred Ground Truth), seed 3 | 2 (only if KD beats baseline) | Crack500 dataset only | `results/gt_soft_seed3_150ep.json`, `runs/segment/crack_distill/gt_soft_seed3_150ep/weights/best.pt` | `GT-Soft logits completed: 1896 generated` and `KD losses computed: mask_kd: ...` |
-| `3_gt_soft_seed4.ipynb` | GT-Soft Control (Blurred Ground Truth), seed 4 | 2 (only if KD beats baseline) | Crack500 dataset only | `results/gt_soft_seed4_150ep.json`, `runs/segment/crack_distill/gt_soft_seed4_150ep/weights/best.pt` | `GT-Soft logits completed: 1896 generated` and `KD losses computed: mask_kd: ...` |
-| `4_benchmark_speed.ipynb` | Latency, single tile + full 2000x1500 scene | — | nothing (times the pretrained `yolo11n-seg.pt`; same architecture as the student) | the printed summary | `Serial Pipeline : ... [measured on cuda]` |
+| `A1_baseline_d4_seed0.ipynb` | Baseline + D4 augmentation, seed 0 | 1 | Crack500 dataset only | `results/baseline_d4_seed0_150ep.json`, `runs/segment/crack_distill/baseline_d4_seed0_150ep/weights/best.pt` | `Clean Baseline Control: Native YOLO setup` and **no** `KD losses computed` line |
+| `A2_mask_kd_d4_seed0.ipynb` | Mask-KD from SAM 2 + D4 augmentation, seed 0 | 1 | Crack500 dataset **+** SAM 2 teacher logits folder (`teacher_logits/` or `teacher_logits_box/`, 2196 `*_logits.npy`) | `results/mask_kd_d4_seed0_150ep.json`, `runs/segment/crack_distill/mask_kd_d4_seed0_150ep/weights/best.pt` | `[Verification] Found 2196 teacher logit files` and `KD losses computed: mask_kd: ...` |
+| `A3_gt_soft_d4_seed0.ipynb` | GT-Soft Control + D4 augmentation, seed 0 | 1 | Crack500 dataset only | `results/gt_soft_d4_seed0_150ep.json`, `runs/segment/crack_distill/gt_soft_d4_seed0_150ep/weights/best.pt` | `GT-Soft logits completed: 1896 generated` and `KD losses computed: mask_kd: ...` |
+| `A4_baseline_ultra_aug_seed0.ipynb` | Baseline + Ultralytics default augmentation (reference), seed 0 | 1 | Crack500 dataset only | `results/baseline_ultra_aug_seed0_150ep.json`, `runs/segment/crack_distill/baseline_ultra_aug_seed0_150ep/weights/best.pt` | `Clean Baseline Control: Native YOLO setup` and **no** `KD losses computed` line |
+| `B1_benchmark_speed.ipynb` | Latency, single tile + full 2000x1500 scene | — | nothing (times the pretrained `yolo11n-seg.pt`; same architecture as the student) | the printed summary | `Serial Pipeline : ... [measured on cuda]` |
 
-- **Baseline (No KD):** Teacher logits are not read, even if attached.
-- **Mask-KD from SAM 2 (Box Prompts):** Without logits it tries to generate them with SAM 2 (untested on Kaggle, hours) — attach them.
-- **GT-Soft Control (Blurred Ground Truth):** Never uses SAM logits; it generates 1896 blurred-GT targets itself in Step 2.
+- **Baseline + D4 augmentation:** Teacher logits are not read, even if attached.
+- **Mask-KD from SAM 2 + D4 augmentation:** Without logits it tries to generate them with SAM 2 (untested on Kaggle, hours) — attach them.
+- **GT-Soft Control + D4 augmentation:** Never uses SAM logits; it generates 1896 blurred-GT targets itself in Step 2.
+- **Baseline + Ultralytics default augmentation (reference):** Teacher logits are not read, even if attached.
 
-**Every training log** must also show `Seed: <S>` and, in the Ultralytics args line, `mosaic=0.0` and
-`overlap_mask=False`. It must **never** show `Redirecting logits_dir`, `Missing letterbox metadata`
-or `No teacher logits ... matched` (in strict mode the last two stop the run).
+**Every training log** must also show `Seed: <S>` and `overlap_mask=False`, and must **never** show
+`Redirecting logits_dir`, `Missing letterbox metadata` or `No teacher logits ... matched` (in strict mode the
+last two stop the run).
+- A1-A3: `D4 augmentation ON` and `mosaic=0.0` in the Ultralytics args.
+- A4: **no** `D4 augmentation ON` line, and `mosaic=1.0`, `fliplr=0.5`, `scale=0.5` in the args.
 
 ## Run order
 
-1. Pairs first, same seed: `1_baseline_seed0` + `2_mask_kd_seed0`, then seeds 1–4.
-2. `3_gt_soft_seed0..2`.
-3. Tier 2 only if the Mask-KD − baseline difference is clearly positive (see `EXPERIMENTS.md`).
+1. `A1_baseline_d4_seed0` and `A2_mask_kd_d4_seed0` first (the decisive pair), then `A4_baseline_ultra_aug_seed0`.
+2. `A3_gt_soft_d4_seed0`.
+3. Send the four executed notebooks back; the decision gate in `docs/KD_DESIGN_v2.md` picks what runs next.
 
 ## After downloading (local)
 
