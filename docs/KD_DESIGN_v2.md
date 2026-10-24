@@ -3,6 +3,10 @@
 *2026-10-14. Replaces the training/evaluation protocol in `EXPERIMENTS.md` (v1). The diagrams are Mermaid:
 they render on GitHub, in Obsidian and in VS Code's Markdown preview.*
 
+> **Update 2026-10-24 — Stage A done.** KD did not beat the matched baseline (A5 0.511 vs A1 0.514 val mask
+> mAP50); Ultralytics default augmentation (A4) was best on val and test. Results, gate outcome and the next
+> step (data-efficiency runs `E1`–`E4`): [§9](#9-stage-a-results-seed-0-2026-10-24).
+
 ## 1. Decisions at a glance
 
 | Question | Decision | Why (details below) |
@@ -218,12 +222,59 @@ KD\* = the better of A2 / A5 on val, fixed before Stage C.
 | Letterbox warp, instance pairing, GT-soft control, strict guards | done, tested (v1) |
 | D4 augmentation (dataset + teacher + trainer switch `train.d4_aug`) | **done, tested** |
 | Box-cropped, GT-gated mask-KL (`mask_kd.box_crop`, `mask_kd.gt_gate`) | **done, tested** (unit + 1-epoch smoke) |
-| Stage A notebooks `A1`–`A5` + `B1_benchmark_speed` | **generated** |
-| Scale-matched tiling, soft instance maps, pixel F1 / IoU / clDice / clIoU evaluator | to build before Stage D |
+| Stage A notebooks `A1`–`A5` + `B1_benchmark_speed` | **run** (seed 0); results §9, executed notebooks in `final_notebooks/A_Runned/` |
+| Scale-matched evaluator | **first version** `scripts/evaluate_scale_matched.py`: ×0.8 tiles, 50% overlap, max of instance mask × confidence, val-tuned threshold, pixel F1/IoU. Gaussian soft maps, clDice/clIoU still to add |
+| Data-efficiency notebooks `E1`–`E4` + `scripts/make_train_subset.py` | **generated, tested** (unit + 1-epoch smoke on a 3% subset) |
 | CFD / GAPs384 / CRKWH100 download recipes + `scripts/prepare_ood_datasets.py` | **done, tested** ([`DATASETS.md`](DATASETS.md)); the downloads themselves are yours to run |
 | Teacher TTA, teacher following scale/translate | Stage B, only if the gate needs them |
 
-## 9. Sources
+## 9. Stage A results (seed 0, 2026-10-24)
+
+**Validity.** All five runs: Kaggle T4, Ultralytics 8.4.60, Python 3.13.15, torch 2.11.0, seed 0,
+`overlap_mask=False`, splits 1896 / 348 / 1124. D4 on in A1–A3 and A5; A4 used Ultralytics' defaults (mosaic 1.0,
+scale 0.5, translate 0.1, fliplr 0.5, erasing 0.4). A2/A5 found all 2,196 teacher files; A3 generated 1,896 GT-soft
+targets. A local re-validation of A1 reproduces Kaggle (val mask mAP50 0.5136 vs 0.5144). Executed notebooks:
+`final_notebooks/A_Runned/`.
+
+**Val (348 crops).**
+
+| Arm | `best.pt` mask mAP50 | mask mAP50-95 | mean mAP50, ep. 26–60 | mean, last 20 ep. | best epoch / ran | T4 time |
+| :--- | :---: | :---: | :---: | :---: | :---: | :---: |
+| A4 baseline, Ultralytics aug | **0.540** | **0.204** | **0.492** | **0.522** | 113 / 150 | 1.4 h |
+| A1 baseline, D4 | 0.514 | 0.180 | 0.467 | 0.369 | 41 / 141 | 1.4 h |
+| A5 Mask-KD gated, D4 | 0.511 | 0.176 | 0.457 | 0.396 | 44 / 144 | 2.6 h |
+| A2 Mask-KD plain, D4 | 0.503 | 0.184 | 0.454 | 0.392 | 24 / 124 | 2.0 h |
+| A3 GT-soft, D4 | 0.481 | 0.177 | 0.460 | 0.369 | 47 / 147 | 2.4 h |
+
+**Test** (`scripts/evaluate_scale_matched.py`, thresholds tuned on val; results in
+`results/test/stageA_seed0_scale_matched.json`):
+
+| Arm | test crops mask mAP50 | test crops pixel F1 | 200 photos pixel F1 | 148 crop-source photos | 52 other-camera photos |
+| :--- | :---: | :---: | :---: | :---: | :---: |
+| A4 | **0.298** | **0.731** | **0.707** | **0.713** | **0.692** |
+| A1 | 0.267 | 0.713 | 0.684 | 0.700 | 0.646 |
+| A5 | 0.242 | 0.704 | 0.661 | 0.685 | 0.601 |
+
+**Gate outcome (§6/§7).** KD\* = A5, fixed on val. KD\* ≤ A1 → *no KD benefit under augmentation; v1's gain was a
+substitute for augmentation.* D4 alone lifted the baseline from 0.410 (v1) to 0.514, twice v1's KD gain (+0.053),
+and KD added nothing on top; KD only slows the late-epoch decline, which best-checkpoint selection makes irrelevant.
+The test set agrees (A4 > A1 > A5 on every metric). One seed: the A1–A5 gaps (≤ 0.025) are within plausible seed
+noise, so the claim is "no gain", not "harm".
+
+**Why test mAP is about half of val mAP.** Not a label bug (val reproduces). Test crops carry more, smaller
+fragments: 2.19 vs 1.81 instances per crop, 14.4% vs 9.8% under 200 px; instance mAP charges every missed fragment.
+Pixel F1 falls much less (≈0.80 → 0.70–0.73), one more reason it is the primary metric.
+
+**Next — data-efficiency stage (`E1`–`E4`, ~4 T4-hours), decision rule fixed now.** The A1 and A5 recipes on
+nested whole-photo subsets: 25% (62 photos, 478 crops) and 50% (125 photos, 931 crops), subset seed 0, identical
+for both arms (`scripts/make_train_subset.py`); 150 epochs; val/test unchanged; the 100% point is Stage A.
+
+| Result | Then |
+| :--- | :--- |
+| E2 − E1 or E4 − E3 ≥ +0.02 val mask mAP50, **and** the same sign in test-crop pixel F1 | KD helps when labels are scarce → seeds 1–2 for that fraction, both arms |
+| otherwise | Report the negative result with the curve; A4 is the deployment model |
+
+## 10. Sources
 
 Beyer et al. 2022, *A good teacher is patient and consistent* — [2106.05237](https://arxiv.org/abs/2106.05237) ·
 ReLabel — [2101.05022](https://arxiv.org/abs/2101.05022) · FKD — [2112.01528](https://arxiv.org/abs/2112.01528) ·
