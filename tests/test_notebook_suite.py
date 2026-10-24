@@ -26,7 +26,7 @@ class TestNotebookSuite(unittest.TestCase):
         self.seeds = SEEDS
 
     def test_all_notebooks_valid_json(self):
-        notebooks = list(self.final_dir.glob("[AB][0-9]_*.ipynb"))  # builder-generated suite only
+        notebooks = list(self.final_dir.glob("[ABE][0-9]_*.ipynb"))  # builder-generated suite only
         self.assertEqual(len(notebooks), sum(len(v) for v in self.seeds.values()) + 1)
         for nb_path in notebooks:
             with open(nb_path, encoding="utf-8") as f:
@@ -121,6 +121,27 @@ class TestNotebookSuite(unittest.TestCase):
             work.mkdir()
             self._run_step1(f"A1_baseline_d4_seed{self.seeds['baseline_d4'][0]}.ipynb", Path(tmp) / "input", work)
             self.assertEqual((work / "data/datasets/crack500_yolo").resolve(), (root / "crack500_yolo").resolve())
+
+    def test_efficiency_pairs_share_one_subset_and_their_full_data_recipe(self):
+        def overrides_block(text):
+            start = text.index("overrides = {")
+            return text[start:text.index("}", start)]
+
+        for pct, base, kd in (("25", "E1_baseline_d4_p25", "E2_mask_kd_gated_d4_p25"),
+                              ("50", "E3_baseline_d4_p50", "E4_mask_kd_gated_d4_p50")):
+            b = notebook_text(self.final_dir / f"{base}_seed0.ipynb")
+            k = notebook_text(self.final_dir / f"{kd}_seed0.ipynb")
+            for text in (b, k):
+                self.assertIn(f"dataset_photos{pct}.yaml", text)
+                self.assertIn("%%writefile scripts/make_train_subset.py", text)
+            subset_line = next(l for l in b.splitlines() if l.startswith("assert (subset["))
+            self.assertIn(subset_line, k)
+            self.assertEqual(overrides_block(b), overrides_block(notebook_text(self.final_dir / "A1_baseline_d4_seed0.ipynb")))
+            self.assertEqual(overrides_block(k), overrides_block(notebook_text(self.final_dir / "A5_mask_kd_gated_d4_seed0.ipynb")))
+
+    def test_full_data_notebooks_have_no_subset(self):
+        for prefix in ARMS:
+            self.assertNotIn("dataset_photos", notebook_text(self.final_dir / f"{prefix}_seed0.ipynb"))
 
     def test_gt_soft_never_uses_sam_logits(self):
         text = notebook_text(self.final_dir / f"A3_gt_soft_d4_seed{self.seeds['gt_soft_d4'][0]}.ipynb")

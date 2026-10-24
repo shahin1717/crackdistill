@@ -35,6 +35,9 @@ with open('scripts/generate_teacher_logits.py', encoding='utf-8') as f:
 with open('scripts/generate_gt_soft_logits.py', encoding='utf-8') as f:
     generate_gt_soft_logits_code = f.read()
 
+with open('scripts/make_train_subset.py', encoding='utf-8') as f:
+    make_train_subset_code = f.read()
+
 # Pinned: the letterbox / instance-order fixes were verified against this exact version
 ULTRALYTICS_PIN = "ultralytics==8.4.60"
 
@@ -82,6 +85,7 @@ def generate_training_notebook(
     prompt_type="box",
     logits_dir="data/teacher_logits_box",
     arm=None,
+    train_fraction=None,
 ):
     exp_name = f"{variant_name}_seed{seed}_150ep"
     arm = arm or variant_name
@@ -178,6 +182,25 @@ print("[Verification Passed] Clean baseline ready to train directly with standar
 
     teacher_override = f'overrides["teacher.logits_dir"] = "{logits_dir}/"' if is_kd else '# No teacher logits override for baseline'
 
+    if train_fraction:
+        exp = SUBSET_EXPECTED[train_fraction]
+        pct = round(train_fraction * 100)
+        data_path = f"data/datasets/crack500_yolo/dataset_photos{pct}.yaml"
+        subset_desc = f", Train subset={pct}% of train photos ({exp[0]} photos, {exp[1]} crops)"
+        subset_code = f"""
+
+# 4. Data-efficiency subset: {pct}% of the 250 train photos (whole photos, subset seed 0, nested in larger
+#    subsets, identical for every arm). Val and test are unchanged.
+import sys
+sys.path.insert(0, ".")
+from scripts.make_train_subset import write_subset
+subset = write_subset("data/datasets/crack500_yolo", {train_fraction}, seed=0)
+print(f"[Subset] {{subset['photos']}} photos, {{subset['crops']}} crops, sha256 {{subset['sha256'][:12]}} -> {{subset['yaml']}}")
+assert (subset["photos"], subset["crops"], subset["sha256"][:12]) == {exp!r}, f"[FATAL] unexpected subset: {{subset}}"
+"""
+    else:
+        data_path, subset_desc, subset_code = "data/datasets/crack500_yolo", "", ""
+
     cells = [
         make_cell('markdown', f"""# 🚀 Crack-Distill: {title} (Seed {seed})
 {description}
@@ -210,6 +233,7 @@ print("[Verification Passed] Clean baseline ready to train directly with standar
         make_cell('code', f"%%writefile scripts/convert_crack500_uncropped.py\n{convert_crack500_uncropped_code}"),
         make_cell('code', f"%%writefile scripts/generate_teacher_logits.py\n{generate_teacher_logits_code}"),
         *([make_cell('code', f"%%writefile scripts/generate_gt_soft_logits.py\n{generate_gt_soft_logits_code}")] if prompt_type == "gt_soft" else []),
+        *([make_cell('code', f"%%writefile scripts/make_train_subset.py\n{make_train_subset_code}")] if train_fraction else []),
 
         make_cell('code', f"""# ── Step 1: Link Kaggle Inputs (Dataset & Teacher Logits) ──
 import os, shutil
@@ -260,7 +284,7 @@ split_sizes = {{s: len(list(Path(f"data/datasets/crack500_yolo/images/{{s}}").gl
 print(f"[Dataset] crack500_yolo split sizes: {{split_sizes}}")
 assert split_sizes == {{"train": 1896, "val": 348, "test": 1124}}, f"[FATAL] Not the canonical Crack500 split: {{split_sizes}}"
 
-{logits_verify_code}
+{logits_verify_code}{subset_code}
 """),
 
         make_cell('code', f"""# ── Step 3: Run Full Production Training ({exp_name}) ──
@@ -277,7 +301,7 @@ overrides = {format_python_dict(overrides_dict)}
 overrides["project.name"] = "crack_distill"
 overrides["project.experiment"] = EXPERIMENT_NAME
 overrides["project.seed"] = {seed}
-overrides["data.datasets"] = [{{"name": "crack500", "path": "data/datasets/crack500_yolo", "format": "yolo"}}]
+overrides["data.datasets"] = [{{"name": "crack500", "path": "{data_path}", "format": "yolo"}}]
 {teacher_override}
 if "train.epochs" not in overrides:
     overrides["train.epochs"] = 150
@@ -287,7 +311,7 @@ if "train.amp" not in overrides:
 cfg = override_config(cfg, overrides)
 
 print(f"=== Starting Run: {{EXPERIMENT_NAME}} ===")
-print("Config in effect: Seed={seed}, Epochs=150, AMP=False, Freezing=False")
+print("Config in effect: Seed={seed}, Epochs=150, AMP=False, Freezing=False{subset_desc}")
 
 trainer = KDSegmentationTrainer(cfg)
 trainer.train()
@@ -711,6 +735,24 @@ ARMS = [
      {**CFG_MASK_KD, **D4, **GATED}, "box", "data/teacher_logits_box"),
 ]
 
+# Data-efficiency curve (run after Stage A found KD* = A5 <= A1 on full data, docs/KD_DESIGN_v2.md §9):
+# does KD help when labels are scarce? A1 vs A5 on nested 25% / 50% photo subsets, identical for both arms.
+# (photos, crops, sha256[:12]) of each subset, computed from the canonical 1896 train crops
+SUBSET_EXPECTED = {0.25: (62, 478, "a6ec6eb8eeee"), 0.5: (125, 931, "26747fed6e46")}
+EFFICIENCY_ARMS = [
+    (f"E{i}_{arm}_p{round(frac * 100)}", f"{arm}_p{round(frac * 100)}", f"{title}, {round(frac * 100)}% of train photos",
+     f"{desc} Trained on {round(frac * 100)}% of the train photos ({SUBSET_EXPECTED[frac][1]} crops); val/test unchanged.",
+     cfg, prompt_type, logits_dir, frac)
+    for i, (frac, (arm, title, desc, cfg, prompt_type, logits_dir)) in enumerate(
+        ((f, a) for f in (0.25, 0.5) for a in (
+            ("baseline_d4", "Baseline + D4 augmentation", "Same recipe as A1.", {**CFG_BASELINE, **D4}, "none",
+             "data/teacher_logits_box"),
+            ("mask_kd_gated_d4", "Box-cropped, GT-gated Mask-KD + D4 augmentation", "Same recipe as A5.",
+             {**CFG_MASK_KD, **D4, **GATED}, "box", "data/teacher_logits_box"))), start=1)
+]
+SEEDS.update({arm: (0,) for _, arm, *_ in EFFICIENCY_ARMS})
+ALL_ARMS = [(*a, None) for a in ARMS] + EFFICIENCY_ARMS
+
 
 def main():
     final_dir = Path("final_notebooks")
@@ -721,11 +763,11 @@ def main():
             json.dump(nb, f, indent=1, ensure_ascii=False)
         print(f"✓ Created final_notebooks/{filename}")
 
-    for prefix, arm, title, description, cfg, prompt_type, logits_dir in ARMS:
+    for prefix, arm, title, description, cfg, prompt_type, logits_dir, fraction in ALL_ARMS:
         for seed in SEEDS[arm]:
             nb = generate_training_notebook(
                 arm, title, description, cfg,
-                seed=seed, prompt_type=prompt_type, logits_dir=logits_dir, arm=arm,
+                seed=seed, prompt_type=prompt_type, logits_dir=logits_dir, arm=arm, train_fraction=fraction,
             )
             save_nb(f"{prefix}_seed{seed}.ipynb", nb)
 
@@ -734,19 +776,19 @@ def main():
     def seeds_txt(arm):
         tier2 = [s for s in SEEDS[arm] if s not in TIER1_SEEDS[arm]]
         return ", ".join(map(str, TIER1_SEEDS[arm])) + (f" (Tier 2: {', '.join(map(str, tier2))})" if tier2 else "")
-    readme_content = f"""# CrackDistill — Kaggle notebooks, v2 Stage A
+    readme_content = f"""# CrackDistill — Kaggle notebooks, v2
 
 Generated by `scripts/build_final_notebooks.py`; do not edit by hand. Design: `docs/KD_DESIGN_v2.md`.
 Each notebook is self-contained (sources embedded with `%%writefile`) and pins `{ULTRALYTICS_PIN}`.
 
 | Notebook | Arm | Seed | ~T4 time |
 | :--- | :--- | :---: | :---: |
-""" + "\n".join(f"| `{prefix}_seed{seeds_txt(arm)}.ipynb` | {title} | {seeds_txt(arm)} | ~2-3 h |" for prefix, arm, title, *_ in ARMS) + f"""
+""" + "\n".join(f"| `{prefix}_seed{seeds_txt(arm)}.ipynb` | {title} | {seeds_txt(arm)} | ~2-3 h |" for prefix, arm, title, *_ in ALL_ARMS) + f"""
 | `B1_benchmark_speed.ipynb` | Single-tile and measured full-scene latency | — | ~5 min |
 
-Stage A = 5 runs (~12 T4-hours). It decides whether KD beats a strong baseline; confirmatory seeds 1-4
-are generated only after that (see the design doc). The v1 notebooks (no spatial augmentation, already run
-for seed 0) are frozen in `v1_no_aug/`.
+Stage A (`A1`-`A5`, done 2026-10-24): KD did not beat the matched baseline on full data (A5 0.511 vs A1 0.514
+val mask mAP50; A4 0.540). Data-efficiency stage (`E1`-`E4`, ~4 T4-hours): A1 vs A5 on 25% / 50% of the train
+photos — does KD help when labels are scarce? The v1 notebooks (no spatial augmentation) are frozen in `v1_no_aug/`.
 
 How to run, what to attach and what to check: [`howrun.md`](howrun.md).
 """
@@ -784,7 +826,7 @@ ARM_INPUTS = {
 
 def write_howrun(final_dir):
     rows = []
-    for prefix, arm, title, _, _, _, _ in ARMS:
+    for prefix, arm, title, *_ in ALL_ARMS:
         inputs, note, check = ARM_INPUTS[arm_kind(arm)]
         for seed in SEEDS[arm]:
             tier = "1" if seed in TIER1_SEEDS[arm] else "2 (only if KD beats baseline)"
@@ -796,7 +838,25 @@ def write_howrun(final_dir):
 
 Generated by `scripts/build_final_notebooks.py` — regenerate instead of editing.
 
-## Quick start (Stage A)
+## Quick start (data-efficiency, `E1`-`E4`) — run these now
+
+Same steps as Stage A below (GPU T4, Internet On, **+ Add Input** → `distill-datasetforme`, Save & Run All).
+Each takes about 0.5–1.5 hours; all four can run in parallel.
+
+| Notebook | What it is |
+| :--- | :--- |
+| `E1_baseline_d4_p25_seed0` | baseline (A1 recipe), 25% of train photos (62 photos, 478 crops) |
+| `E2_mask_kd_gated_d4_p25_seed0` | gated SAM KD (A5 recipe), same 25% |
+| `E3_baseline_d4_p50_seed0` | baseline, 50% of train photos (125 photos, 931 crops) |
+| `E4_mask_kd_gated_d4_p50_seed0` | gated SAM KD, same 50% |
+
+**Quick check in each log:** `[Subset] 62 photos, 478 crops, sha256 a6ec6eb8eeee` (25%) or
+`[Subset] 125 photos, 931 crops, sha256 26747fed6e46` (50%) — the run stops if the subset differs — plus
+`Seed: 0`, `overlap_mask=False`, and for E2/E4 `Found 2196 teacher logit files`.
+
+**Send back:** the four executed `.ipynb` files and the four `best.pt` (Output tab).
+
+## Quick start (Stage A, done)
 
 For each notebook:
 1. Import it into Kaggle.
@@ -870,6 +930,7 @@ last two stop the run).
 1. `A1_baseline_d4_seed0` and `A2_mask_kd_d4_seed0` first (the decisive pair), then `A4_baseline_ultra_aug_seed0`.
 2. `A5_mask_kd_gated_d4_seed0`, then `A3_gt_soft_d4_seed0`.
 3. Send the five executed notebooks back; the decision gate in `docs/KD_DESIGN_v2.md` picks what runs next.
+4. Data-efficiency: `E1`-`E4` in any order (the pairs E1/E2 and E3/E4 are what get compared).
 
 ## After downloading (local)
 
