@@ -26,7 +26,7 @@ class TestNotebookSuite(unittest.TestCase):
         self.seeds = SEEDS
 
     def test_all_notebooks_valid_json(self):
-        notebooks = list(self.final_dir.glob("[ABE][0-9]_*.ipynb"))  # builder-generated suite only
+        notebooks = list(self.final_dir.glob("[ABEI][0-9]_*.ipynb"))  # builder-generated suite only
         self.assertEqual(len(notebooks), sum(len(v) for v in self.seeds.values()) + 1)
         for nb_path in notebooks:
             with open(nb_path, encoding="utf-8") as f:
