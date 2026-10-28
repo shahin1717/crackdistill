@@ -21,12 +21,12 @@ def notebook_text(path: Path) -> str:
 class TestNotebookSuite(unittest.TestCase):
     def setUp(self):
         self.repo_root = Path(__file__).parent.parent
-        self.final_dir = self.repo_root / "final_notebooks"
+        self.final_dir = self.repo_root / "final_notebooks" / "old"   # finished stages A, E, B
         from scripts.build_final_notebooks import SEEDS
         self.seeds = SEEDS
 
     def test_all_notebooks_valid_json(self):
-        notebooks = list(self.final_dir.glob("[ABEI][0-9]_*.ipynb"))  # builder-generated suite only
+        notebooks = list(self.final_dir.glob("[ABE][0-9]_*.ipynb")) + list(self.final_dir.parent.glob("I[0-9]_*.ipynb"))  # builder-generated suite only
         self.assertEqual(len(notebooks), sum(len(v) for v in self.seeds.values()) + 1)
         for nb_path in notebooks:
             with open(nb_path, encoding="utf-8") as f:

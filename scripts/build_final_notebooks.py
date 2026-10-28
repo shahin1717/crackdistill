@@ -808,10 +808,14 @@ def main():
     final_dir = Path("final_notebooks")
     final_dir.mkdir(parents=True, exist_ok=True)
 
+    # Finished stages (A, E, B) live in final_notebooks/old/; the current runs stay at the top level
+    (final_dir / "old").mkdir(exist_ok=True)
+
     def save_nb(filename, nb):
-        with open(final_dir / filename, "w", encoding="utf-8") as f:
+        sub_dir = "" if filename.startswith("I") else "old/"
+        with open(final_dir / sub_dir / filename, "w", encoding="utf-8") as f:
             json.dump(nb, f, indent=1, ensure_ascii=False)
-        print(f"✓ Created final_notebooks/{filename}")
+        print(f"✓ Created final_notebooks/{sub_dir}{filename}")
 
     for prefix, arm, title, description, cfg, prompt_type, logits_dir, fraction in ALL_ARMS:
         for seed in SEEDS[arm]:
