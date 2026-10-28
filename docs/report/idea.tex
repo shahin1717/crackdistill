@@ -1,0 +1,103 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{booktabs,amsmath,hyperref,enumitem,xcolor}
+\hypersetup{colorlinks,urlcolor=blue!50!black,linkcolor=blue!50!black}
+\setlist{itemsep=1pt,topsep=3pt}
+\newcommand{\cost}[1]{\hfill\textcolor{gray}{\small[#1]}}
+\title{\textbf{CrackDistill --- What to do next, and why}\\\large An honest diagnosis and ranked ideas}
+\author{Shahin Alakbarov}\date{28 October 2026}
+\begin{document}\maketitle
+
+\section{Diagnosis: why KD does not help (yet)}
+Knowledge distillation helps when the teacher knows something the student cannot learn from the labels.
+Our measurements say SAM\,2 does not:
+\begin{itemize}
+\item \textbf{The teacher is worse than the labels.} Zero-shot SAM\,2 against the ground truth: median IoU \textbf{0.605}. Recall is 0.56 on cracks 4\,px wide or thinner, and 21\% of its crack pixels are ground-truth background.
+\item \textbf{The student has already caught up.} The student alone reaches a test pixel F1 of 0.71--0.73. If the teacher is not clearly better than that, it only adds noise or label smoothing.
+\item \textbf{Augmentation does the same job.} The v1 KD gain (+0.053) came while the student had no spatial augmentation. Flips and rotations alone gave +0.104, and KD added 0 on top of them.
+\item \textbf{The teacher cannot follow the strongest augmentation.} Cached logits cannot follow mosaic or scale changes, and that is exactly where the best model (A4, 0.540) gets its advantage.
+\end{itemize}
+\textbf{Consequence:} a SAM\,1+SAM\,2 fusion of two \emph{zero-shot} teachers is unlikely to fix this. Their errors are
+correlated: both miss thin cracks, and both are prompted with the same boxes. Fusion is worth trying only after the teacher has been improved.
+
+\paragraph{This is not failure.} ``A carefully controlled study shows that foundation-model KD gains on a
+small crack segmenter vanish under matched augmentation'' is a publishable negative result. Many KD papers compare
+against weak baselines, as our own v1 did. The ideas below either turn this into a positive result or make the
+negative result stronger.
+
+\section{Ranked ideas}
+
+\subsection*{1. Make the teacher better than the student (highest expected gain)\cost{$\sim$4 T4-h}}
+Fine-tune SAM\,2 on the Crack500 train crops, either the normalisation layers only (Segment Any Crack, arXiv:2504.14138)
+or with LoRA/adapters (CrackSAM, arXiv:2312.04233). Re-cache the logits and rerun A5.
+\textbf{Gate before any KD run:} the teacher's val pixel F1 must clearly exceed the student's (above 0.80, against the student's 0.73).
+If the teacher passes, KD has real knowledge to transfer. If not, we have learned that cheaply.
+
+\subsection*{2. Use SAM where there are no labels: semi-supervised scaling\cost{$\sim$6 T4-h}}
+The teacher's value is in \emph{labelling new images}, not in softening labels we already have.
+\begin{itemize}
+\item \textbf{Unlabelled pool:} the 250 full train photos at native scale (including crack-free regions), and images from other
+pavement sets with their labels set aside.
+\item \textbf{Pseudo-labels:} the fine-tuned teacher (idea 1), keeping only confident pixels. Then train A4 on labelled plus pseudo-labelled
+images, mean-teacher or UniMatch style (SemiSAM, S4M, Boxes2Pixels).
+\item \textbf{Crack-free tiles:} these also fix our main full-photo error, false positives on bare road (precision about 0.69).
+\end{itemize}
+
+\subsection*{3. Test where a foundation teacher should matter: out-of-distribution\cost{$\sim$1 h, no training}}
+We have only measured in-domain. A SAM teacher may help \emph{generalisation} even with no in-domain gain.
+Evaluate the existing A1, A4 and A5 checkpoints zero-shot on DeepCrack (already local), CFD and GAPs384, using pixel F1 and clDice.
+\textbf{Cheapest experiment on this list, and it could change the story.}
+
+\subsection*{4. Distil from a teacher that can follow full augmentation\cost{$\sim$6 T4-h}}
+Train a large YOLOv11x-seg with A4's augmentation (optionally on SAM pseudo-labels), then distil it into YOLOv11n online,
+in the same batch as the student, so mosaic and scale are no problem.
+A chain such as SAM $\rightarrow$ YOLO-x $\rightarrow$ YOLO-n (a ``teacher assistant'') closes the capacity gap and the augmentation gap at once.
+
+\subsection*{5. Fix the student's architecture for thin cracks\cost{$\sim$3 T4-h}}
+YOLO-seg predicts masks from prototypes at 1/4 resolution (128$\times$128 for a 512 input), so a 3\,px crack is under one prototype cell.
+Options:
+\begin{itemize}
+\item a P2 (stride-4) head or a 2$\times$ prototype resolution;
+\item \texttt{mask\_ratio}=2;
+\item a training input of 640.
+\end{itemize}
+This improves the baseline whether or not KD works. Compare against a lightweight semantic crack model (SCSegamba, CVPR 2025).
+
+\subsection*{6. Better data protocol\cost{$\sim$2 T4-h}}
+\begin{itemize}
+\item \textbf{Combined training set.} Crack500 train + DeepCrack train + CFD half, with clean splits, then test on held-out sets. More diverse data usually beats any loss trick.
+\item \textbf{Train on full photos, not only crops.} The 250 full train photos are in an older Kaggle mirror. Use random native-scale tiles, including empty ones.
+\item \textbf{Use the right metric.} Pixel F1 and clDice instead of instance mask mAP50, which over-penalises fragmented cracks (test mAP 0.27 against pixel F1 0.71).
+\end{itemize}
+
+\subsection*{7. SAM\,1 + SAM\,2 fusion, done properly (after idea 1)\cost{$\sim$4 T4-h}}
+\begin{itemize}
+\item Standardise each teacher's logits (Sun et al., CVPR 2024), then weight them per pixel by confidence (low entropy).
+\item Apply KD only where the teachers agree with each other and with the ground truth; elsewhere use the ground truth.
+\item Use the fusion mainly to produce \emph{pseudo-labels} for idea 2, where an ensemble really reduces noise.
+\item Schedule: KD weight $w(e)=w_0\cos^2(\pi e/2E)$, strong early and fading late. Our logs show KD helps only as an early regulariser.
+\end{itemize}
+
+\section{Recommended plan (2--3 weeks)}
+\begin{center}\small
+\begin{tabular}{clll}
+\toprule
+Week & Do & Decides & If it fails\\
+\midrule
+1 & Idea 3 (OOD eval) + E2 rerun + seeds 1--2 & Is there any KD signal? & Strengthens the negative result\\
+1 & Idea 1 (fine-tune the teacher), check teacher F1 & Can the teacher beat the student? & Skip KD, go to 5/6\\
+2 & Idea 2 or 4 with the good teacher & Positive KD result vs A4 & Report the negative result\\
+2--3 & Idea 5 + 6 (architecture, data) & Best final model & --\\
+\bottomrule
+\end{tabular}\end{center}
+\textbf{Success criterion, fixed in advance:} beat A4 by at least 0.02 val mask mAP50 (or 0.02 pixel F1) with the same sign on test,
+confirmed over 3 seeds.
+
+\paragraph{The paper either way.}
+\begin{itemize}
+\item \textbf{Positive:} ``A crack-tuned SAM teacher with semi-supervised distillation improves a 2.8M-parameter
+segmenter beyond strong augmentation.''
+\item \textbf{Negative:} ``Zero-shot foundation-model KD gains are an artefact of weak baselines'', with the audit, controls and data-efficiency curve.
+\end{itemize}
+Both stories rest on the work already done.
+\end{document}
