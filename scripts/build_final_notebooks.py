@@ -76,6 +76,44 @@ def format_python_dict(d, indent=4):
     return "".join(lines)
 
 
+IDEAL_YAML = "data/datasets/crack_ideal_yolo/dataset.yaml"
+IDEAL_SIZES = {"train": 3306, "val": 738, "test": 2432}
+
+
+def _to_ideal(cell):
+    """Point a training notebook at the uploaded crack_ideal_yolo dataset (Crack500 + DeepCrack x2 tiles)."""
+    src = "".join(cell["source"])
+    if src.startswith("# ── Step 1"):
+        src += f"""
+# 3. Link the scale-matched Crack500 + DeepCrack dataset (Kaggle dataset `crack-ideal`; folder crack_ideal_yolo/)
+ideal_dirs = sorted(Path(r) for r, d, f in os.walk(str(Path("/kaggle/input")), followlinks=True) if Path(r).name == "crack_ideal_yolo" and "dataset.yaml" in f)
+assert ideal_dirs, "[FATAL] crack_ideal_yolo/ (with dataset.yaml) not found in /kaggle/input — attach the crack-ideal dataset"
+ideal_src = ideal_dirs[0].resolve()
+# The input is read-only and its yaml holds a laptop path: build a writable local root that links images/ and
+# labels/, with a yaml whose path is that root (the trainer resets `path:` to the yaml's own folder)
+ideal_root = Path("{IDEAL_YAML}").parent
+ideal_root.mkdir(parents=True, exist_ok=True)
+for sub_dir in ("images", "labels"):
+    if not (ideal_root / sub_dir).exists():
+        os.symlink(ideal_src / sub_dir, ideal_root / sub_dir)
+Path("{IDEAL_YAML}").write_text(f"path: {{ideal_root.resolve()}}\\ntrain: images/train\\nval: images/val\\ntest: images/test\\n\\nnc: 1\\nnames:\\n  0: crack\\n")
+print(f"[Dataset] crack_ideal_yolo: {{ideal_src}} -> {IDEAL_YAML}")
+"""
+    elif src.startswith("# ── Step 2"):
+        start = src.index("# Canonical Crack500 split")
+        end = src.index("\n\n", src.index("assert split_sizes"))
+        src = src[:start] + f"""# Ideal dataset split (Crack500 crops + DeepCrack x2 tiles): anything else means the wrong upload
+ideal_root = Path(open("{IDEAL_YAML}").readline().split(":", 1)[1].strip())
+split_sizes = {{s: len(list((ideal_root / "images" / s).glob("*"))) for s in ("train", "val", "test")}}
+print(f"[Dataset] crack_ideal_yolo split sizes: {{split_sizes}}")
+assert split_sizes == {IDEAL_SIZES!r}, f"[FATAL] Not the crack_ideal_yolo split: {{split_sizes}}"
+""" + src[end:]
+    else:
+        src = src.replace("data/datasets/crack500_yolo/dataset.yaml", IDEAL_YAML)
+        src = src.replace('"path": "data/datasets/crack500_yolo", "format"', f'"path": "{IDEAL_YAML}", "format"')
+    return make_cell(cell["cell_type"], src)
+
+
 def generate_training_notebook(
     variant_name,
     title,
@@ -86,6 +124,7 @@ def generate_training_notebook(
     logits_dir="data/teacher_logits_box",
     arm=None,
     train_fraction=None,
+    ideal=False,
 ):
     exp_name = f"{variant_name}_seed{seed}_150ep"
     arm = arm or variant_name
@@ -385,6 +424,8 @@ with open(out_file, "w", encoding="utf-8") as f:
 print(f"Saved structured summary to {{out_file}}")
 """)
     ]
+    if ideal:
+        cells = [_to_ideal(c) for c in cells]
     return make_nb(cells)
 
 
@@ -753,6 +794,15 @@ EFFICIENCY_ARMS = [
 SEEDS.update({arm: (0,) for _, arm, *_ in EFFICIENCY_ARMS})
 ALL_ARMS = [(*a, None) for a in ARMS] + EFFICIENCY_ARMS
 
+# Ideal dataset (Crack500 + DeepCrack x2 tiles, scripts/build_ideal_dataset.py): new baselines KD must beat
+IDEAL_ARMS = [
+    ("I1_baseline_d4_ideal", "baseline_d4_ideal", "Baseline + D4 augmentation, ideal dataset",
+     "A1 recipe on Crack500 + scale-matched DeepCrack tiles.", {**CFG_BASELINE, **D4}),
+    ("I2_baseline_ultra_aug_ideal", "baseline_ultra_aug_ideal", "Baseline + Ultralytics default augmentation, ideal dataset",
+     "A4 recipe (best model so far) on Crack500 + scale-matched DeepCrack tiles.", {**CFG_BASELINE, **ULTRA_AUG}),
+]
+SEEDS.update({arm: (0,) for _, arm, *_ in IDEAL_ARMS})
+
 
 def main():
     final_dir = Path("final_notebooks")
@@ -770,6 +820,9 @@ def main():
                 seed=seed, prompt_type=prompt_type, logits_dir=logits_dir, arm=arm, train_fraction=fraction,
             )
             save_nb(f"{prefix}_seed{seed}.ipynb", nb)
+    for prefix, arm, title, description, cfg in IDEAL_ARMS:
+        nb = generate_training_notebook(arm, title, description, cfg, seed=0, prompt_type="none", arm=arm, ideal=True)
+        save_nb(f"{prefix}_seed0.ipynb", nb)
 
     save_nb("B1_benchmark_speed.ipynb", generate_benchmark_notebook())
 
