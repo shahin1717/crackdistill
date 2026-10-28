@@ -229,7 +229,7 @@ class TestTeacherKindFallback(unittest.TestCase):
                                                 "feature": {"enabled": False}, "boundary": {"enabled": False}}})
                 with self.assertRaises(FileNotFoundError):
                     KDSegmentationTrainer(
-                        overrides={"model": "yolo11n-seg.pt", "data": "data/datasets/combined_yolo/dataset.yaml", "epochs": 1},
+                        overrides={"model": "yolo11n-seg.pt", "data": "data/datasets/crack500_yolo/dataset.yaml", "epochs": 1},
                         kd_cfg=kd_cfg, logits_dir=empty)
             finally:
                 probe.unlink()
@@ -249,7 +249,7 @@ class TestTeacherKindFallback(unittest.TestCase):
                                  "losses": {"task": {"weight": 1.0}, "mask_kd": {"enabled": True},
                                             "feature": {"enabled": False}, "boundary": {"enabled": False}}})
             trainer = KDSegmentationTrainer(
-                overrides={"model": "yolo11n-seg.pt", "data": "data/datasets/combined_yolo/dataset.yaml", "epochs": 1},
+                overrides={"model": "yolo11n-seg.pt", "data": "data/datasets/crack500_yolo/dataset.yaml", "epochs": 1},
                 kd_cfg=kd_cfg, logits_dir=logits)
             trainer.setup_model()
 
@@ -293,7 +293,7 @@ class TestMissingGeometryFallback(unittest.TestCase):
             },
         })
         return KDSegmentationTrainer(
-            overrides={"model": "yolo11n-seg.pt", "data": "data/datasets/combined_yolo/dataset.yaml", "epochs": 1},
+            overrides={"model": "yolo11n-seg.pt", "data": "data/datasets/crack500_yolo/dataset.yaml", "epochs": 1},
             kd_cfg=kd_cfg,
             logits_dir=self.logits_dir,
         )

@@ -359,7 +359,7 @@ def main():
 
     print("\n[Done] All active datasets processed successfully.")
     print("Next step:")
-    print("  python scripts/run_experiments.py --exp full_kd")
+    print("  Train with the Kaggle notebooks in final_notebooks/ (see final_notebooks/howrun.md)")
 
 
 if __name__ == "__main__":

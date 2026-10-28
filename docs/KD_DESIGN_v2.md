@@ -1,6 +1,6 @@
 # CrackDistill v2 — how the distillation will work
 
-*2026-10-14. Replaces the training/evaluation protocol in `EXPERIMENTS.md` (v1). The diagrams are Mermaid:
+*2026-10-14. Replaces the v1 training/evaluation protocol. The diagrams are Mermaid:
 they render on GitHub, in Obsidian and in VS Code's Markdown preview.*
 
 > **Update 2026-10-24 — Stage A done.** KD did not beat the matched baseline (A5 0.511 vs A1 0.514 val mask

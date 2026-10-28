@@ -55,7 +55,7 @@ class TestP1Defects(unittest.TestCase):
             }
         })
         trainer = KDSegmentationTrainer(
-            overrides={"model": "yolo11n-seg.pt", "data": "data/datasets/combined_yolo/dataset.yaml", "epochs": 1},
+            overrides={"model": "yolo11n-seg.pt", "data": "data/datasets/crack500_yolo/dataset.yaml", "epochs": 1},
             kd_cfg=kd_cfg,
             logits_dir=self.logits_dir
         )
@@ -110,7 +110,7 @@ class TestP1Defects(unittest.TestCase):
             }
         })
         trainer = KDSegmentationTrainer(
-            overrides={"model": "yolo11n-seg.pt", "data": "data/datasets/combined_yolo/dataset.yaml", "epochs": 1},
+            overrides={"model": "yolo11n-seg.pt", "data": "data/datasets/crack500_yolo/dataset.yaml", "epochs": 1},
             kd_cfg=kd_cfg,
             logits_dir=self.logits_dir
         )
@@ -182,7 +182,7 @@ class TestP1Defects(unittest.TestCase):
             }
         })
         trainer_strict = KDSegmentationTrainer(
-            overrides={"model": "yolo11n-seg.pt", "data": "data/datasets/combined_yolo/dataset.yaml", "epochs": 1},
+            overrides={"model": "yolo11n-seg.pt", "data": "data/datasets/crack500_yolo/dataset.yaml", "epochs": 1},
             kd_cfg=kd_cfg_strict,
             logits_dir=self.logits_dir
         )
@@ -211,7 +211,7 @@ class TestP1Defects(unittest.TestCase):
             }
         })
         trainer_tolerant = KDSegmentationTrainer(
-            overrides={"model": "yolo11n-seg.pt", "data": "data/datasets/combined_yolo/dataset.yaml", "epochs": 1},
+            overrides={"model": "yolo11n-seg.pt", "data": "data/datasets/crack500_yolo/dataset.yaml", "epochs": 1},
             kd_cfg=kd_cfg_tolerant,
             logits_dir=self.logits_dir
         )
