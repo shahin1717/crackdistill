@@ -1,0 +1,120 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[margin=2.2cm]{geometry}
+\usepackage{booktabs,amsmath,hyperref,enumitem,xcolor}
+\hypersetup{colorlinks,urlcolor=blue!50!black,linkcolor=blue!50!black}
+\setlist{itemsep=1pt,topsep=3pt}
+\title{\textbf{CrackDistill --- project outline, status and next steps}\\\large A method for knowledge distillation from SAM models into YOLO for crack segmentation}
+\author{Shahin Alakbarov}\date{12 November 2026}
+\begin{document}\maketitle
+
+\section{Project outline}
+\textbf{Aim:} a method that transfers the knowledge of SAM foundation models into a small real-time YOLO segmenter for road cracks.
+\begin{itemize}
+\item \textbf{Student:} YOLOv11n-seg (2.8M parameters). \textbf{First teacher:} SAM\,2.1 Hiera-Large (224M). \textbf{Data:} Crack500.
+\item \textbf{Step 1 (now):} build and validate the method with SAM\,2.
+\item \textbf{Step 2:} choose which distillation losses to combine and their weights.
+\item \textbf{Step 3:} repeat with SAM\,1 and SAM\,3 as teachers.
+\item \textbf{Step 4:} combine the teachers.
+\end{itemize}
+
+\section{Step 1 --- SAM\,2 as teacher}
+\subsection*{1a. What we learned so far}
+\begin{center}\small
+\begin{tabular}{lc}
+\toprule
+Model (seed 0, 150 epochs) & Val mask mAP50\\
+\midrule
+Baseline, Ultralytics augmentation (A4) & \textbf{0.540}\\
+Baseline, flips and rotations (A1) & 0.514\\
+Gated KD from SAM\,2 logits (A5) & 0.511\\
+Plain KD from SAM\,2 logits (A2) & 0.503\\
+\bottomrule
+\end{tabular}\end{center}
+Adding SAM's soft logits as an extra loss on images that \emph{already have ground-truth masks} gives no gain once the student is
+trained with augmentation. The cause is measured: on those images SAM without fine-tuning is less accurate than the labels (median IoU 0.605),
+so it has nothing new to teach there.
+
+\subsection*{1b. The method: SAM teaches on images without masks}
+SAM's strength is turning a cheap prompt (a box) into a mask. So the teacher is used where the student has no mask:
+\begin{enumerate}
+\item Masks are available for only $p$\% of the train photos. The rest have boxes only (taken from the GT, simulating box annotation).
+\item SAM's mask decoder is fine-tuned on the $p$\% masks (image encoder frozen).
+\item SAM turns the boxes of the remaining crops into masks.
+\item YOLOv11n-seg is trained on GT masks + SAM masks with full augmentation. Validation and test always use GT.
+\end{enumerate}
+SAM's knowledge reaches the student through the masks it produces (label distillation). Because these are ordinary labels,
+mosaic and scale augmentation can be used, which cached logits did not allow.
+
+\subsection*{1c. Experiments (Kaggle T4)}
+\begin{center}\small
+\begin{tabular}{llp{6.6cm}p{4.2cm}}
+\toprule
+Run & Masks & Training labels & Role\\
+\midrule
+R0 & 100\% & GT on 1896 crops (done: 0.540) & Upper bound\\
+R1 & 25\% & GT on 478 crops only & Lower bound\\
+R2 & 25\% & GT on 478 + \textbf{SAM\,2 masks} on 1418 & \textbf{Main result}\\
+R3 & 0\% & SAM\,2 masks on all 1896, no fine-tuning & No masks at all\\
+R4 & 25\% & GT on 478 + masks from the R1 student on 1418 & Same pipeline without a teacher\\
+R5 & 10\% & as R1 and R2 with 201 labelled crops & Second point of the curve\\
+\bottomrule
+\end{tabular}\end{center}
+\begin{itemize}
+\item \textbf{The gain from distillation} is R2 minus R1. \textbf{The gain that comes from SAM itself} is R2 minus R4: R4 is the standard
+self-training baseline, where the student labels the extra images alone. A reviewer will ask for it.
+\item \textbf{Metrics:} val mask mAP50, test pixel F1, and the quality of the teacher's masks against the hidden GT.
+\item \textbf{Success criterion, fixed in advance:} R2 beats R1 by at least 0.02 val mAP50 with the same sign on test pixel F1, confirmed over 3 seeds.
+\item \textbf{Status:} six notebooks are built and tested locally on a few images. None has been run on Kaggle yet. About 18 T4-hours.
+\end{itemize}
+
+\section{Step 2 --- which losses to combine, and their weights}
+The code has four terms: task loss (YOLO box, class, mask), mask KD (KL to SAM logits), feature KD (channel-wise, neck P3--P5) and a boundary loss.
+The current weights (0.96, 1.87, 0.81) were tuned before the code audit, so they must be chosen again. Starting from the R2 model:
+\begin{enumerate}
+\item Add \textbf{one term at a time}: + mask KD, + boundary, + feature KD (3 runs).
+\item Set each weight \textbf{by scale}: the term is about 25\% of the task loss in the first epochs. For the best term, also try half and double (2 runs).
+\item \textbf{Combine} the terms that gained at least 0.01 alone (1 run), then 3 seeds.
+\end{enumerate}
+All choices use validation; the test set is used once at the end. Technical point: cached logits and features cannot follow mosaic,
+so these terms are applied with flip/rotation augmentation or in the final mosaic-free epochs.
+
+\section{Step 3 --- other teachers: SAM\,1 and SAM\,3}
+The pipeline of Step 1 stays the same; only the teacher changes. For each teacher we report two numbers: the teacher's own mask quality on validation,
+and the student trained from it (the R2 setting).
+\begin{center}\small
+\begin{tabular}{lp{5.2cm}p{6.6cm}}
+\toprule
+Teacher & Prompt & Note\\
+\midrule
+SAM\,2.1 Hiera-L & box & Step 1\\
+SAM\,1 ViT-H & box & Older, heavier image encoder; same box-prompt interface\\
+SAM\,3 & box, and the text ``crack'' & Text prompt needs no boxes, so it could label fully unlabelled images\\
+\bottomrule
+\end{tabular}\end{center}
+\sloppy A reported zero-shot result for SAM\,3 with the prompt ``crack'' is about 56\% crack IoU (\href{https://arxiv.org/abs/2607.12292}{arXiv:2607.12292}),
+so fine-tuning is expected to matter for every teacher.
+
+\section{Step 4 --- combining the teachers}
+The teachers make different errors, so their masks can be fused before training the student:
+\begin{itemize}
+\item \textbf{Average} the teachers' probabilities per pixel (after putting their logits on a common scale).
+\item \textbf{Agreement:} keep a crack pixel only if at least two teachers predict it; this reduces false positives.
+\item \textbf{Confidence weighting:} per pixel, trust the more confident teacher.
+\end{itemize}
+The fused teacher is evaluated like a single teacher (its mask quality, then the student trained from it), and compared with the best single teacher.
+
+\section{Expected outcome}
+A distillation method with: (i) the way SAM knowledge is transferred (masks on unlabelled images, plus the loss terms of Step 2),
+(ii) a comparison of SAM\,1, SAM\,2 and SAM\,3 as teachers, and (iii) a teacher-fusion rule, all for a 2.8M-parameter real-time model.
+The earlier finding (logit KD on labelled images gives no gain under matched augmentation) is reported as part of the study.
+
+\paragraph{Limitations so far.} Results are single-seed. Boxes are derived from the GT masks, so they are tighter than hand-drawn boxes
+(a box-jitter option exists to test this). In a local test on 30 crops, SAM\,2 without fine-tuning over-segmented (pixel precision 0.48),
+so the fine-tuning in step 1b is important. Steps 3 and 4 are not implemented yet.
+
+\sloppy\paragraph{Related work (short search, abstracts only).}
+Label distillation from foundation models into small students: \href{https://arxiv.org/abs/2505.21904}{CAST (arXiv:2505.21904)},
+\href{https://arxiv.org/abs/2604.03841}{arXiv:2604.03841}, \href{https://arxiv.org/abs/2411.16196}{arXiv:2411.16196}.
+SAM box prompts for pseudo-labels in medical imaging: \href{https://arxiv.org/abs/2407.13553}{arXiv:2407.13553}.
+The search found no crack paper that distils SAM box-prompted masks into a real-time model or compares several SAM versions as teachers.
+\end{document}
