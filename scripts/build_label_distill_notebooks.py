@@ -63,12 +63,25 @@ assert (subset["photos"], subset["crops"], subset["sha256"][:12]) == {exp!r}, f"
     if source == "sam":
         src += """
 !pip install -q SAM-2 || pip install -q git+https://github.com/facebookresearch/sam2.git
-!wget -q -nc https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt -O checkpoints/sam2_hiera_large.pt
+# SAM 2.1 checkpoint (~900 MB). A failed download leaves an empty file, so check the size and fall back to the HF hub.
+import shutil
+ckpt = Path("checkpoints/sam2_hiera_large.pt")
+ckpt.parent.mkdir(exist_ok=True)
+if not ckpt.exists() or ckpt.stat().st_size < 8e8:
+    ckpt.unlink(missing_ok=True)
+    !wget -nv https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt -O {ckpt}
+if not ckpt.exists() or ckpt.stat().st_size < 8e8:
+    from huggingface_hub import hf_hub_download
+    ckpt.unlink(missing_ok=True)
+    shutil.copy(hf_hub_download("facebook/sam2.1-hiera-large", "sam2.1_hiera_large.pt"), ckpt)
+assert ckpt.stat().st_size > 8e8, f"[FATAL] SAM 2.1 checkpoint download failed ({ckpt.stat().st_size} bytes)"
+print(f"[Teacher] checkpoint {ckpt} {ckpt.stat().st_size / 1e6:.0f} MB")
 """
         if fraction:
             src += f"""
 # Teacher: SAM 2.1 decoder fine-tuned on the labelled crops only (best val F1 kept; zero-shot if tuning never helps)
 !python scripts/sam2_teacher_finetune.py finetune --crack500 data/datasets/crack500 --train-list {labeled} --out runs/teacher_ft --epochs 10
+assert Path("runs/teacher_ft/history.json").exists(), "[FATAL] teacher fine-tuning crashed: see the traceback above"
 W = Path("runs/teacher_ft/sam2_crack_decoder.pt")
 WEIGHTS = f"--weights {{W}}" if W.exists() else ""
 print(f"[Teacher] {{'fine-tuned decoder ' + str(W) if W.exists() else 'fine-tuning never beat zero-shot on val: using zero-shot SAM'}}")
