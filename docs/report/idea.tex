@@ -78,6 +78,32 @@ This improves the baseline whether or not KD works. Compare against a lightweigh
 \item Schedule: KD weight $w(e)=w_0\cos^2(\pi e/2E)$, strong early and fading late. Our logs show KD helps only as an early regulariser.
 \end{itemize}
 
+\section{Which KD to run once the teacher is good}
+So far we have tried only two losses: plain pixel KD (A2) and gated KD (A5, KD only where the teacher agrees with the ground truth).
+Once idea 1 passes the gate, these are the candidates. Each one fixes a specific failure we measured.
+\begin{center}\small
+\begin{tabular}{p{3.4cm}p{6.2cm}p{5.2cm}}
+\toprule
+KD type & What it does & Why for us\\
+\midrule
+Gated pixel KD (A5) & BCE to teacher probabilities only on pixels where the teacher agrees with the GT & Reference; already implemented\\
+Logit-standardised KD (Sun et al., CVPR 2024) & Z-score the teacher and student logits per image before the loss & SAM's logit scale differs from YOLO's prototype logits; removes the temperature guess\\
+Self-correcting KD & Replace teacher pixels that contradict the GT with the GT (rectified target) instead of masking them & Keeps the full KD signal while fixing the 21\% teacher false positives\\
+Skeleton / clDice KD & Extra KD term on the soft skeleton of the teacher mask & Targets thin cracks ($\le$4\,px), where both teacher and student fail most\\
+Boundary KD & Upweight KD on a band around the crack edge & Crack area is mostly boundary; interior pixels are easy\\
+DIST (Huang et al., NeurIPS 2022) & Match inter- and intra-class correlation, not exact values & Robust to the large teacher--student capacity gap\\
+Channel-wise KD (CWD, Shu et al., ICCV 2021) & Softmax over spatial positions per channel, then KL & Standard for dense prediction; transfers where, not how much\\
+Feature KD from YOLO-x (idea 4) & Match neck features of a YOLOv11x-seg teacher online & Same architecture family; follows mosaic and scale augmentation\\
+\bottomrule
+\end{tabular}\end{center}
+\textbf{All of them use a fading schedule} $w(e)=w_0\cos^2(\pi e/2E)$, because our logs show KD helps only early.
+\begin{itemize}
+\item \textbf{Round 1 (1 seed):} gated vs logit-standardised vs self-correcting.
+\item \textbf{Round 2 (3 seeds):} add the skeleton term to the winner.
+\item \textbf{Optional:} DIST, CWD and YOLO-x feature KD.
+\end{itemize}
+Every arm is compared against A4, with the same augmentation.
+
 \section{Recommended plan (2--3 weeks)}
 \begin{center}\small
 \begin{tabular}{clll}
