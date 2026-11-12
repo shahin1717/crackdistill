@@ -779,7 +779,7 @@ ARMS = [
 # Data-efficiency curve (run after Stage A found KD* = A5 <= A1 on full data, docs/KD_DESIGN_v2.md §9):
 # does KD help when labels are scarce? A1 vs A5 on nested 25% / 50% photo subsets, identical for both arms.
 # (photos, crops, sha256[:12]) of each subset, computed from the canonical 1896 train crops
-SUBSET_EXPECTED = {0.25: (62, 478, "a6ec6eb8eeee"), 0.5: (125, 931, "26747fed6e46")}
+SUBSET_EXPECTED = {0.1: (25, 201, "f36b958206f0"), 0.25: (62, 478, "a6ec6eb8eeee"), 0.5: (125, 931, "26747fed6e46")}
 EFFICIENCY_ARMS = [
     (f"E{i}_{arm}_p{round(frac * 100)}", f"{arm}_p{round(frac * 100)}", f"{title}, {round(frac * 100)}% of train photos",
      f"{desc} Trained on {round(frac * 100)}% of the train photos ({SUBSET_EXPECTED[frac][1]} crops); val/test unchanged.",
