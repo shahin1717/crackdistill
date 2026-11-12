@@ -4,6 +4,7 @@ Is the teacher better than the student? KD is worth running only if it is. Built
 
 | Notebook | Does | Attach | Time (T4) | Download |
 | :--- | :--- | :--- | :---: | :--- |
+| `T0_sam_bakeoff.ipynb` | Zero-shot SAM 2.1 (tiny, small, base_plus, large) and SAM 1 (ViT-B, L, H) on val, same box prompts | `distill-datasetforme` | ~20 min | `runs/teacher_bakeoff/bakeoff_valcrop.json` |
 | `T1_sam2_teacher_finetune.ipynb` | SAM 2.1 zero-shot → fine-tune decoder on cracks → gate → re-cache logits | `distill-datasetforme` | ~1.5–2 h | `runs/teacher_ft/`, `teacher_logits_ft.zip` (if gate passed) |
 | `T2_sam3_zeroshot.ipynb` | SAM 3 zero-shot, text prompt "crack" (bake-off, optional) | `distill-datasetforme` + secret `HF_TOKEN` | ~20 min | printed table, `runs/teacher_sam3/` |
 

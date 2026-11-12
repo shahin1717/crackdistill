@@ -30,15 +30,22 @@ import torch
 import torch.nn.functional as F
 
 SAM2_CFG = "configs/sam2.1/sam2.1_hiera_l.yaml"
+# SAM 2.1 sizes: name -> (config, checkpoint file name on dl.fbaipublicfiles.com/segment_anything_2/092824/)
+SAM2_MODELS = {
+    "sam2.1_tiny": ("configs/sam2.1/sam2.1_hiera_t.yaml", "sam2.1_hiera_tiny.pt"),
+    "sam2.1_small": ("configs/sam2.1/sam2.1_hiera_s.yaml", "sam2.1_hiera_small.pt"),
+    "sam2.1_base_plus": ("configs/sam2.1/sam2.1_hiera_b+.yaml", "sam2.1_hiera_base_plus.pt"),
+    "sam2.1_large": (SAM2_CFG, "sam2.1_hiera_large.pt"),
+}
 MIN_AREA = 50
 THIN_PX = 4   # a GT pixel is "thin" if the local crack width around it is <= 4 px
 
 
-def load_predictor(ckpt, weights=None, device=None):
+def load_predictor(ckpt, weights=None, device=None, cfg=SAM2_CFG):
     from sam2.build_sam import build_sam2
     from sam2.sam2_image_predictor import SAM2ImagePredictor
     device = device or ("cuda" if torch.cuda.is_available() else "cpu")
-    predictor = SAM2ImagePredictor(build_sam2(SAM2_CFG, str(ckpt), device=device))
+    predictor = SAM2ImagePredictor(build_sam2(cfg, str(ckpt), device=device))
     if weights:
         state = torch.load(weights, map_location=device)
         predictor.model.sam_mask_decoder.load_state_dict(state["sam_mask_decoder"])
@@ -232,6 +239,7 @@ def main():
     ap.add_argument("cmd", choices=["eval", "finetune", "logits"])
     ap.add_argument("--crack500", default="data/datasets/crack500")
     ap.add_argument("--ckpt", default="checkpoints/sam2_hiera_large.pt")
+    ap.add_argument("--model", default="sam2.1_large", choices=list(SAM2_MODELS), help="SAM 2.1 size (must match --ckpt)")
     ap.add_argument("--weights", default=None, help="fine-tuned decoder (from finetune); omit for zero-shot")
     ap.add_argument("--split", default="valcrop")
     ap.add_argument("--out", default="runs/teacher_ft")
@@ -242,7 +250,7 @@ def main():
     ap.add_argument("--max-val", type=int, default=None)
     a = ap.parse_args()
     root = Path(a.crack500)
-    predictor = load_predictor(a.ckpt, a.weights)
+    predictor = load_predictor(a.ckpt, a.weights, cfg=SAM2_MODELS[a.model][0])
     if a.cmd == "eval":
         res = {"split": a.split, "weights": a.weights or "zero-shot", **evaluate(predictor, root / a.split, a.max)}
         print(json.dumps(res, indent=2))

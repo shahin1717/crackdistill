@@ -2,6 +2,7 @@
 """
 Build the teacher notebooks in teacher_notebooks/ (separate from the student training notebooks).
 
+  T0_sam_bakeoff.ipynb            zero-shot SAM 2.1 (4 sizes) and SAM 1 (3 sizes) on val, same box prompts
   T1_sam2_teacher_finetune.ipynb  SAM 2.1 zero-shot -> fine-tune decoder on cracks -> gate (val F1 > 0.80) -> re-cache logits
   T2_sam3_zeroshot.ipynb          SAM 3 zero-shot with the text prompt "crack", same metrics (bake-off; optional)
 
@@ -20,6 +21,8 @@ OUT = ROOT / "teacher_notebooks"
 GATE_F1 = 0.80
 SPLITS = {"traincrop": 1896, "valcrop": 348, "testcrop": 1124}
 
+DOWNLOAD = '# SAM 2.1 checkpoint (~900 MB). A failed download leaves an empty file, so check the size and fall back to the HF hub.\nimport shutil\nckpt = Path("checkpoints/sam2_hiera_large.pt")\nckpt.parent.mkdir(exist_ok=True)\nif not ckpt.exists() or ckpt.stat().st_size < 8e8:\n    ckpt.unlink(missing_ok=True)\n    !wget -nv https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt -O {ckpt}\nif not ckpt.exists() or ckpt.stat().st_size < 8e8:\n    from huggingface_hub import hf_hub_download\n    ckpt.unlink(missing_ok=True)\n    shutil.copy(hf_hub_download("facebook/sam2.1-hiera-large", "sam2.1_hiera_large.pt"), ckpt)\nassert ckpt.stat().st_size > 8e8, f"[FATAL] SAM 2.1 checkpoint download failed ({ckpt.stat().st_size} bytes)"\nprint(f"[Teacher] checkpoint {ckpt} {ckpt.stat().st_size / 1e6:.0f} MB")\n'
+
 teacher_code = (ROOT / "scripts/sam2_teacher_finetune.py").read_text()
 
 LINK = f"""# ── Link raw Crack500 (the folder holding traincrop/ valcrop/ testcrop/ with .jpg + .png masks) ──
@@ -33,6 +36,27 @@ counts = {{s: len(list((CRACK500 / s).glob("*.jpg"))) for s in {list(SPLITS)!r}}
 print(f"[Dataset] {{CRACK500}} {{counts}}")
 assert counts == {SPLITS!r}, f"[FATAL] not the canonical Crack500 crops: {{counts}}"
 """
+
+
+def t0():
+    return make_nb([
+        make_cell("markdown", """# T0: teacher bake-off, SAM models of different sizes (zero-shot)
+Which SAM is the best teacher before any fine-tuning? Every model gets the same box prompts (one box per GT component)
+on the 348 Crack500 val crops, and its masks are compared with the GT.
+
+* **SAM 2.1:** tiny, small, base_plus, large. **SAM 1:** ViT-B, ViT-L, ViT-H. (SAM 3 is in T2; it needs a separate install.)
+* **Metrics:** pixel precision / recall / F1, mean IoU, thin-crack recall, parameters, ms per image.
+* **Next:** fine-tune the best one (T1) and compare it with its zero-shot version.
+
+**Attach:** `distill-datasetforme`. **GPU:** T4. **Time:** ~20 min. **Download:** `runs/teacher_bakeoff/bakeoff_valcrop.json`."""),
+        make_cell("code", """!mkdir -p scripts checkpoints runs
+!pip install -q SAM-2 || pip install -q git+https://github.com/facebookresearch/sam2.git
+!pip install -q segment-anything || pip install -q git+https://github.com/facebookresearch/segment-anything.git"""),
+        make_cell("code", f"%%writefile scripts/sam2_teacher_finetune.py\n{teacher_code}"),
+        make_cell("code", f"%%writefile scripts/sam_bakeoff.py\n{(ROOT / 'scripts/sam_bakeoff.py').read_text()}"),
+        make_cell("code", LINK),
+        make_cell("code", """!python scripts/sam_bakeoff.py --crack500 {CRACK500} --split valcrop --out runs/teacher_bakeoff"""),
+    ])
 
 
 def t1():
@@ -50,8 +74,8 @@ Is the teacher better than the student? KD can only help if it is.
 **Download from Output:** `teacher_ft/` (history.json, eval_*.json, sam2_crack_decoder.pt) and `teacher_logits_ft.zip` if written."""),
         make_cell("code", """!mkdir -p scripts checkpoints runs
 !pip install -q SAM-2 || pip install -q git+https://github.com/facebookresearch/sam2.git
-!wget -q -nc https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt -O checkpoints/sam2_hiera_large.pt
 !nvidia-smi --query-gpu=name,memory.total --format=csv"""),
+        make_cell("code", "from pathlib import Path\n" + DOWNLOAD),
         make_cell("code", f"%%writefile scripts/sam2_teacher_finetune.py\n{teacher_code}"),
         make_cell("code", LINK),
         make_cell("code", """# ── Step 1: zero-shot teacher on val ──
@@ -140,7 +164,7 @@ print("Compare against T1's zero-shot SAM 2 row (box prompts) and the gate (val 
 
 def main():
     OUT.mkdir(exist_ok=True)
-    for name, nb in [("T1_sam2_teacher_finetune.ipynb", t1()), ("T2_sam3_zeroshot.ipynb", t2())]:
+    for name, nb in [("T0_sam_bakeoff.ipynb", t0()), ("T1_sam2_teacher_finetune.ipynb", t1()), ("T2_sam3_zeroshot.ipynb", t2())]:
         (OUT / name).write_text(json.dumps(nb, indent=1) + "\n")
         print(f"wrote {OUT / name}")
 
