@@ -167,9 +167,9 @@ class TestTrainerD4Wiring(unittest.TestCase):
         self.assertIsInstance(ds, KDYOLODataset)
         self.assertIsInstance(ds.base_dataset, D4AugDataset)
 
-    def test_d4_refuses_untransformed_feature_kd(self):
+    def test_d4_refuses_untransformed_affinity_kd(self):
         with self.assertRaises(ValueError):
-            self._trainer(True, **{"distillation.losses.feature.enabled": True})
+            self._trainer(True, **{"distillation.losses.affinity.enabled": True})
 
 
 class TestKDPixelWeight(unittest.TestCase):

@@ -9,6 +9,10 @@ rest get masks predicted from their boxes.
       --source student  a trained YOLO-seg student (--student best.pt), prediction kept inside the boxes
 
 Val and test labels are always GT. The quality of the predicted masks against the hidden GT is saved in meta.json.
+
+--kd-out DIR (SAM only) also caches what the KD losses need, for every train crop that has label lines:
+  DIR/teacher_logits_ft/crack500_<stem>_logits.npy     K x 256 x 256 float16, one teacher map per label line
+  DIR/teacher_features/crack500_<stem>_features.npz    image_embed, feat1 (float16), only with --features
 Output: <out>/{images/{train,val,test} (links to the source images), labels/{train,val,test}, dataset.yaml, meta.json}
 
 Usage:
@@ -43,9 +47,41 @@ def boxes_mask(boxes, shape):
 
 
 @torch.no_grad()
-def sam_mask(predictor, img, boxes):
+def sam_predict(predictor, img, boxes):
+    """Union mask at full resolution and the per-box low-res logits (N x 256 x 256)."""
     set_image(predictor, img)
-    return (decode(predictor, boxes)[1][:, 0] > 0).any(0).cpu().numpy()
+    low, full = decode(predictor, boxes)
+    return (full[:, 0] > 0).any(0).cpu().numpy(), low[:, 0].float().cpu().numpy()
+
+
+def sam_mask(predictor, img, boxes):
+    return sam_predict(predictor, img, boxes)[0]
+
+
+def teacher_maps(low, lines, size=256):
+    """
+    One teacher logit map per label line (K x size x size, float16), in label-file order, which is how the KD
+    trainer pairs teacher maps with instances.
+
+    low: N x size x size box-prompted logits spanning the whole image. Every map is their pixel-wise maximum,
+    except that pixels inside another label's polygon are forced to background (-|logit|), so an instance is
+    never taught the neighbouring crack as its own foreground.
+    """
+    union = low.max(0)
+    regions = []
+    for line in lines:
+        pts = np.array(line.split()[1:], dtype=np.float32).reshape(-1, 2) * size
+        r = np.zeros((size, size), np.uint8)
+        cv2.fillPoly(r, [np.round(pts).astype(np.int32)], 1)
+        regions.append(cv2.dilate(r, np.ones((3, 3), np.uint8)).astype(bool))
+    maps = []
+    for k, own in enumerate(regions):
+        other = np.zeros_like(own)
+        for j, r in enumerate(regions):
+            if j != k:
+                other |= r
+        maps.append(np.where(other & ~own, -np.abs(union), union))
+    return np.stack(maps).astype(np.float16)
 
 
 def student_mask(model, img_path, boxes, shape, imgsz=512, conf=0.25):
@@ -56,7 +92,7 @@ def student_mask(model, img_path, boxes, shape, imgsz=512, conf=0.25):
 
 
 def build(crack500, yolo, out, source="sam", ckpt="checkpoints/sam2_hiera_large.pt", weights=None, student=None,
-          labeled_list=None, box_jitter=0.0, max_images=None):
+          labeled_list=None, box_jitter=0.0, max_images=None, kd_out=None, features=False):
     crack500, yolo, out = Path(crack500), Path(yolo).resolve(), Path(out)
     labeled = read_stems(labeled_list) if labeled_list else set()
     if out.exists():
@@ -71,6 +107,15 @@ def build(crack500, yolo, out, source="sam", ckpt="checkpoints/sam2_hiera_large.
         for img in (yolo / "images" / s).iterdir():
             os.symlink(img, out / "images" / s / img.name)
 
+    assert not kd_out or source == "sam", "--kd-out caches SAM outputs: use --source sam"
+    logits_dir = feats_dir = None
+    if kd_out:
+        logits_dir = Path(kd_out) / "teacher_logits_ft"
+        feats_dir = Path(kd_out) / "teacher_features"
+        for d in (logits_dir, feats_dir):
+            shutil.rmtree(d, ignore_errors=True)
+            d.mkdir(parents=True)
+    n_logits = 0
     if source == "sam":
         predictor = load_predictor(ckpt, weights)
     else:
@@ -82,32 +127,49 @@ def build(crack500, yolo, out, source="sam", ckpt="checkpoints/sam2_hiera_large.
         todo = pairs(crack500 / "traincrop")
         for img_path, mask_path in todo:
             dst = out / "labels" / "train" / f"{img_path.stem}.txt"
-            if img_path.stem in labeled:
+            is_gt = img_path.stem in labeled
+            if is_gt:
                 shutil.copy2(yolo / "labels" / "train" / dst.name, dst)
                 n_gt += 1
-                continue
-            if max_images and n_pseudo >= max_images:   # smoke tests: the remaining crops get no label file
+                if not kd_out:
+                    continue
+            elif max_images and n_pseudo >= max_images:   # smoke tests: the remaining crops get no label file
                 continue
             img, gt = read_pair(img_path, mask_path)
             _, boxes = instances(gt)
-            pred = np.zeros(gt.shape, bool)
+            pred, low = np.zeros(gt.shape, bool), None
             if len(boxes):
-                if box_jitter:
+                if box_jitter and not is_gt:
                     boxes = jitter(boxes, *gt.shape, frac=box_jitter)
-                pred = sam_mask(predictor, img, boxes) if source == "sam" else student_mask(model, img_path, boxes, gt.shape)
-            accumulate(acc, pred, gt)
-            png = Path(tmp) / "m.png"
-            cv2.imwrite(str(png), pred.astype(np.uint8) * 255)
-            lines = binary_mask_to_yolo_instances(str(png), gt.shape[1], gt.shape[0])
-            dst.write_text("".join(f"{l}\n" for l in lines))
-            n_pseudo += 1
-            n_empty += not lines
-            if n_pseudo % 200 == 0:
-                print(f"  {n_pseudo} pseudo-labelled", flush=True)
+                if source == "sam":
+                    pred, low = sam_predict(predictor, img, boxes)
+                else:
+                    pred = student_mask(model, img_path, boxes, gt.shape)
+            if is_gt:
+                lines = dst.read_text().splitlines()
+            else:
+                accumulate(acc, pred, gt)
+                png = Path(tmp) / "m.png"
+                cv2.imwrite(str(png), pred.astype(np.uint8) * 255)
+                lines = binary_mask_to_yolo_instances(str(png), gt.shape[1], gt.shape[0])
+                dst.write_text("".join(f"{l}\n" for l in lines))
+                n_pseudo += 1
+                n_empty += not lines
+                if n_pseudo % 200 == 0:
+                    print(f"  {n_pseudo} pseudo-labelled", flush=True)
+            lines = [l for l in lines if l.strip()]
+            if kd_out and low is not None and lines:
+                np.save(logits_dir / f"crack500_{img_path.stem}_logits.npy", teacher_maps(low, lines))
+                n_logits += 1
+                if features:
+                    f = predictor._features
+                    np.savez(feats_dir / f"crack500_{img_path.stem}_features.npz",
+                             image_embed=f["image_embed"][0].half().cpu().numpy(),
+                             feat1=f["high_res_feats"][1][0].half().cpu().numpy())
     (out / "dataset.yaml").write_text(f"path: {out.resolve()}\ntrain: images/train\nval: images/val\ntest: images/test\n\n"
                                       "nc: 1\nnames:\n  0: crack\n")
     meta = {"source": source, "weights": str(weights or student or "zero-shot"), "box_jitter": box_jitter,
-            "gt_crops": n_gt, "pseudo_crops": n_pseudo, "pseudo_empty": n_empty,
+            "gt_crops": n_gt, "pseudo_crops": n_pseudo, "pseudo_empty": n_empty, "kd_logit_files": n_logits,
             "pseudo_quality_vs_hidden_gt": summarize(acc) if n_pseudo else None}
     (out / "meta.json").write_text(json.dumps(meta, indent=2) + "\n")
     return meta
@@ -125,9 +187,11 @@ def main():
     ap.add_argument("--labeled-list", default=None, help="crops that keep GT masks; omit for 0%% masks")
     ap.add_argument("--box-jitter", type=float, default=0.0)
     ap.add_argument("--max", type=int, default=None, help="limit pseudo-labelled crops (smoke tests)")
+    ap.add_argument("--kd-out", default=None, help="also cache teacher logits (and features) for the KD losses here")
+    ap.add_argument("--features", action="store_true", help="with --kd-out: cache SAM encoder features too")
     a = ap.parse_args()
     print(json.dumps(build(a.crack500, a.yolo, a.out, a.source, a.ckpt, a.weights, a.student, a.labeled_list,
-                           a.box_jitter, a.max), indent=2))
+                           a.box_jitter, a.max, a.kd_out, a.features), indent=2))
 
 
 if __name__ == "__main__":

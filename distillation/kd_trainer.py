@@ -6,6 +6,7 @@ Registers hooks and trains 1x1 projection convolutions for feature distillation.
 Uses picklable hooks and temporary hook/loss restoration during model saving to prevent pickling errors.
 """
 
+import math
 import cv2
 import numpy as np
 import torch
@@ -148,6 +149,40 @@ def kd_pixel_weight(valid, boxes_xyxy, gt_masks, teacher_logits, box_crop=False,
         gt = F.interpolate(gt_masks[:, None].float().to(teacher_logits.device), size=(h, w), mode="nearest")[:, 0] > 0.5
         weight = weight * ((teacher_logits > 0) == gt).float()
     return weight
+
+
+class KDScaleCalibrator:
+    """
+    Sets the weight of a KD term by scale: with losses.<term>.auto_frac = f, the term is rescaled so that it
+    contributes f times the task loss. For the first `steps` training batches the scale follows the running
+    ratio task / term; after that it is frozen at f * mean(task) / mean(term) for the rest of training.
+    Terms without auto_frac keep scale 1 (their configured weight is used as is).
+    """
+    def __init__(self, fracs, steps=100):
+        self.fracs = {k: float(v) for k, v in fracs.items() if v}
+        self.steps = int(steps)
+        self.n = {k: 0 for k in self.fracs}
+        self.task = {k: 0.0 for k in self.fracs}
+        self.term = {k: 0.0 for k in self.fracs}
+        self.scale = {}
+
+    def __call__(self, name, term, task):
+        """term: raw value of the KD term in this batch; task: task loss in the same units as the term is added in."""
+        if name not in self.fracs:
+            return 1.0
+        if name in self.scale:
+            return self.scale[name]
+        if not (term > 1e-12 and task > 0 and math.isfinite(term) and math.isfinite(task)):
+            return 0.0
+        self.n[name] += 1
+        self.task[name] += task
+        self.term[name] += term
+        scale = self.fracs[name] * self.task[name] / self.term[name]
+        if self.n[name] >= self.steps:
+            self.scale[name] = scale
+            print(f"[KD] weight of '{name}' fixed at {scale:.4f} "
+                  f"({self.fracs[name]:.3f} x task loss, measured on {self.n[name]} batches)")
+        return scale
 
 
 class D4AugDataset(torch.utils.data.Dataset):
@@ -491,12 +526,18 @@ class KDSegmentationTrainer(SegmentationTrainer):
         self._current_d4 = None
         if self.d4_aug and self.is_kd_on and kd_cfg is not None:
             losses = getattr(kd_cfg, "losses", None)
-            unsupported = [n for n in ("feature", "affinity") if getattr(getattr(losses, n, None), "enabled", False)]
+            unsupported = [n for n in ("affinity",) if getattr(getattr(losses, n, None), "enabled", False)]
             if unsupported:
-                raise ValueError(f"train.d4_aug does not transform teacher features / affinity crops; disable {unsupported}.")
+                raise ValueError(f"train.d4_aug does not transform affinity crops; disable {unsupported}.")
         self._sam_targets = {}   # image_stem → soft target tensor (M, 256, 256)
         self._sam_features = {}  # image_stem → dict of features
         self._hook_handles = []
+        losses_cfg = getattr(kd_cfg, "losses", None) if kd_cfg is not None else None
+        self.kd_scale = KDScaleCalibrator({
+            n: getattr(getattr(losses_cfg, n, None), "auto_frac", None)
+            for n in ("mask_kd", "boundary", "feature", "affinity", "tversky")
+            if getattr(getattr(losses_cfg, n, None), "enabled", False)
+        })
 
         if not self.is_kd_on:
             self.proj_layers = torch.nn.ModuleDict()
@@ -914,9 +955,12 @@ class KDSegmentationTrainer(SegmentationTrainer):
             kd_losses = trainer_ref._kd_loss_from_preds(preds, batch, self_model)
             
             # Combine losses
+            # base_loss is a vector of task components and each KD term is added to every component, so the
+            # per-component task loss is the unit a KD term is measured against (auto_frac, KDScaleCalibrator)
             total = base_loss
+            task_unit = float(base_loss.detach().sum()) / max(base_loss.numel(), 1)
             for k, v in kd_losses.items():
-                total = total + v
+                total = total + v * trainer_ref.kd_scale(k, float(v.detach()), task_unit)
 
             return total, loss_items
 
@@ -957,6 +1001,12 @@ class KDSegmentationTrainer(SegmentationTrainer):
 
             loss_tversky = torch.tensor(0.0, device=self.device)
             loss_tversky_count = 0
+
+            _losses_cfg = getattr(self.kd_cfg, "losses", None)
+            mask_kd_cfg = getattr(_losses_cfg, "mask_kd", None)
+            affinity_cfg = getattr(_losses_cfg, "affinity", None)
+            boundary_cfg = getattr(_losses_cfg, "boundary", None)
+            tversky_cfg = getattr(_losses_cfg, "tversky", None)
 
             # 1. Compute L_mask and L_boundary (Per-instance matched)
             for i, img_path in enumerate(self._current_paths):
@@ -1227,6 +1277,10 @@ class KDSegmentationTrainer(SegmentationTrainer):
                                     tf_item = warp_to_letterbox(tf_item, f_box, (target_h, target_w), pad_value=0.0)
                                 elif tf_item.shape[2:] != (target_h, target_w):
                                     tf_item = F.interpolate(tf_item, size=(target_h, target_w), mode="bilinear", align_corners=False)
+                                # D4 augmentation: rotate / flip the teacher feature map with the student canvas
+                                f_d4 = getattr(self, "_current_d4", None)
+                                if f_d4 is not None and b_idx < len(f_d4) and int(f_d4[b_idx]) != 0:
+                                    tf_item = d4_apply(tf_item, int(f_d4[b_idx]))
                                 
                                 tf_list.append(tf_item)
                                 valid_item_indices.append(b_idx)
