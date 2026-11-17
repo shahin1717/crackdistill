@@ -17,6 +17,9 @@ YOLOv11n-seg to the fully labelled model (A4: val mask mAP50 0.540)?
 **Order:** R1, R2 and R3 first (independent, run in parallel). R4 after R1 (it needs R1's `best.pt`: attach the R1
 notebook output, or upload the file as a dataset). R5a/R5b last.
 
+**Seeds:** R1, R2 and R4 also exist as `_seed1` and `_seed2`. Only the training seed changes; the labelled subset is
+the same. R4 of seed N needs the `best.pt` of R1 seed N, and only that one checkpoint attached.
+
 **Check in the log**
 - `[Dataset] crack500_yolo split sizes: {'train': 1896, 'val': 348, 'test': 1124}`
 - `[Subset] 62 photos, 478 crops, sha256 a6ec6eb8eeee` (25%) or `25 photos, 201 crops, sha256 f36b958206f0` (10%)

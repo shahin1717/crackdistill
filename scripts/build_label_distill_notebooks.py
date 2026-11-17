@@ -39,9 +39,30 @@ RUNS = [
     ("R5a_baseline_p10", "baseline_ultra_aug_p10", "10% masks only", 0.1, None),
     ("R5b_sam_labels_p10", "sam_labels_p10", "10% masks + SAM masks on the rest", 0.1, "sam"),
 ]
+# Runs repeated with seeds 1 and 2 (the training seed changes; the labelled subset stays the seed-0 one)
+SEEDED = {"R1_baseline_p25", "R2_sam_labels_p25", "R4_self_labels_p25"}
 
 
-def label_cells(fraction, source):
+# Install SAM 2 and fetch the Large checkpoint (shared with scripts/build_loss_notebooks.py)
+SAM_SETUP = """
+!pip install -q SAM-2 || pip install -q git+https://github.com/facebookresearch/sam2.git
+# SAM 2.1 checkpoint (~900 MB). A failed download leaves an empty file, so check the size and fall back to the HF hub.
+import shutil
+ckpt = Path("checkpoints/sam2_hiera_large.pt")
+ckpt.parent.mkdir(exist_ok=True)
+if not ckpt.exists() or ckpt.stat().st_size < 8e8:
+    ckpt.unlink(missing_ok=True)
+    !wget -nv https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt -O {ckpt}
+if not ckpt.exists() or ckpt.stat().st_size < 8e8:
+    from huggingface_hub import hf_hub_download
+    ckpt.unlink(missing_ok=True)
+    shutil.copy(hf_hub_download("facebook/sam2.1-hiera-large", "sam2.1_hiera_large.pt"), ckpt)
+assert ckpt.stat().st_size > 8e8, f"[FATAL] SAM 2.1 checkpoint download failed ({ckpt.stat().st_size} bytes)"
+print(f"[Teacher] checkpoint {ckpt} {ckpt.stat().st_size / 1e6:.0f} MB")
+"""
+
+
+def label_cells(fraction, source, seed=0):
     """Cells that build crack500_pseudo: GT masks for the labelled crops, box-prompted masks for the rest."""
     pct = round(fraction * 100)
     labeled = f"data/datasets/crack500_yolo/train_photos{pct}.txt"
@@ -61,22 +82,7 @@ assert (subset["photos"], subset["crops"], subset["sha256"][:12]) == {exp!r}, f"
 """
     labeled_arg = f"--labeled-list {labeled} " if fraction else ""
     if source == "sam":
-        src += """
-!pip install -q SAM-2 || pip install -q git+https://github.com/facebookresearch/sam2.git
-# SAM 2.1 checkpoint (~900 MB). A failed download leaves an empty file, so check the size and fall back to the HF hub.
-import shutil
-ckpt = Path("checkpoints/sam2_hiera_large.pt")
-ckpt.parent.mkdir(exist_ok=True)
-if not ckpt.exists() or ckpt.stat().st_size < 8e8:
-    ckpt.unlink(missing_ok=True)
-    !wget -nv https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt -O {ckpt}
-if not ckpt.exists() or ckpt.stat().st_size < 8e8:
-    from huggingface_hub import hf_hub_download
-    ckpt.unlink(missing_ok=True)
-    shutil.copy(hf_hub_download("facebook/sam2.1-hiera-large", "sam2.1_hiera_large.pt"), ckpt)
-assert ckpt.stat().st_size > 8e8, f"[FATAL] SAM 2.1 checkpoint download failed ({ckpt.stat().st_size} bytes)"
-print(f"[Teacher] checkpoint {ckpt} {ckpt.stat().st_size / 1e6:.0f} MB")
-"""
+        src += SAM_SETUP
         if fraction:
             src += f"""
 # Teacher: SAM 2.1 decoder fine-tuned on the labelled crops only (best val F1 kept; zero-shot if tuning never helps)
@@ -94,9 +100,9 @@ print(f"[Teacher] {{'fine-tuned decoder ' + str(W) if W.exists() else 'fine-tuni
 """
     else:
         src += f"""
-# Label source: the R1 student ({R1_ARM}); attach the R1 notebook output or a dataset holding its best.pt
+# Label source: the R1 student of the same seed ({R1_ARM}_seed{seed}); attach the R1 notebook output or a dataset holding its best.pt
 pts = [p for p in Path("/kaggle/input").rglob("*.pt") if "sam2" not in p.name and not p.name.startswith("yolo")]
-cands = sorted(p for p in pts if "{R1_ARM}" in str(p) and p.name == "best.pt") or sorted(pts)
+cands = sorted(p for p in pts if "{R1_ARM}_seed{seed}" in str(p) and p.name == "best.pt") or sorted(pts)
 assert len(cands) == 1, f"[FATAL] need exactly one R1 checkpoint in /kaggle/input, found: {{cands}}"
 STUDENT = cands[0]
 print(f"[Student] {{STUDENT}}")
@@ -122,13 +128,13 @@ Path("/kaggle/working/results/label_meta.json").write_text(json.dumps(meta, inde
     return writes + [make_cell("code", src)]
 
 
-def notebook(arm, title, fraction, source):
+def notebook(arm, title, fraction, source, seed=0):
     if source is None:
-        return generate_training_notebook(arm, title, "A4 recipe on the labelled crops only.", CFG, seed=0,
+        return generate_training_notebook(arm, title, "A4 recipe on the labelled crops only.", CFG, seed=seed,
                                           prompt_type="none", arm=arm, train_fraction=fraction)
     desc = ("A4 recipe on all 1896 train crops. GT masks are used only for the labelled crops; the other crops get "
             "masks predicted from their boxes (Step 2b). Val and test labels are GT.")
-    nb = generate_training_notebook(arm, title, desc, CFG, seed=0, prompt_type="none", arm=arm)
+    nb = generate_training_notebook(arm, title, desc, CFG, seed=seed, prompt_type="none", arm=arm)
     cells, old = [], '"path": "data/datasets/crack500_yolo", "format"'
     for c in nb["cells"]:
         text = "".join(c["source"])
@@ -137,7 +143,7 @@ def notebook(arm, title, fraction, source):
             c = make_cell("code", text.replace(old, f'"path": "{PSEUDO}/dataset.yaml", "format"'))
         cells.append(c)
         if text.startswith("# ── Step 2"):
-            cells += label_cells(fraction, source)
+            cells += label_cells(fraction, source, seed)
     assert len(cells) > len(nb["cells"])
     nb["cells"] = cells
     return nb
@@ -162,6 +168,9 @@ YOLOv11n-seg to the fully labelled model (A4: val mask mAP50 0.540)?
 **Order:** R1, R2 and R3 first (independent, run in parallel). R4 after R1 (it needs R1's `best.pt`: attach the R1
 notebook output, or upload the file as a dataset). R5a/R5b last.
 
+**Seeds:** R1, R2 and R4 also exist as `_seed1` and `_seed2`. Only the training seed changes; the labelled subset is
+the same. R4 of seed N needs the `best.pt` of R1 seed N, and only that one checkpoint attached.
+
 **Check in the log**
 - `[Dataset] crack500_yolo split sizes: {{'train': 1896, 'val': 348, 'test': 1124}}`
 - `[Subset] 62 photos, 478 crops, sha256 a6ec6eb8eeee` (25%) or `25 photos, 201 crops, sha256 f36b958206f0` (10%)
@@ -180,9 +189,10 @@ pixel F1, and R2 beats R4. Headline number: the gap between R2 and A4.
 def main():
     OUT.mkdir(exist_ok=True)
     for name, arm, title, fraction, source in RUNS:
-        path = OUT / f"{name}_seed0.ipynb"
-        path.write_text(json.dumps(notebook(arm, title, fraction, source), indent=1, ensure_ascii=False) + "\n")
-        print(f"wrote {path.relative_to(ROOT)}")
+        for seed in (0, 1, 2) if name in SEEDED else (0,):
+            path = OUT / f"{name}_seed{seed}.ipynb"
+            path.write_text(json.dumps(notebook(arm, title, fraction, source, seed), indent=1, ensure_ascii=False) + "\n")
+            print(f"wrote {path.relative_to(ROOT)}")
     (OUT / "README.md").write_text(README)
 
 
